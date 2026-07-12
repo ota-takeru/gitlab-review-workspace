@@ -1,0 +1,136 @@
+:root {
+  color-scheme: light dark;
+
+  /* Pajamas-inspired semantic surfaces, sourced from the active VS Code theme. */
+  --gl-surface-default: var(--vscode-editor-background);
+  --gl-surface-subtle: var(--vscode-sideBar-background, color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground)));
+  --gl-surface-raised: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --gl-surface-overlay: var(--vscode-menu-background, var(--gl-surface-raised));
+
+  /* Warm GitLab Workspace accents: use color for roles, not decoration. */
+  --gl-accent-orange: #e86e32;
+  --gl-accent-purple: #9b8afb;
+  --gl-accent-blue: #5b9cf6;
+  --gl-accent-green: #52a66a;
+  --gl-accent-cyan: #45c4cf;
+  --gl-changed-accent: var(--gl-accent-orange);
+  --gl-commit-accent: var(--gl-accent-purple);
+  --gl-thread-accent: var(--gl-accent-blue);
+  --gl-resolved-accent: var(--gl-accent-green);
+  --gl-local-accent: var(--gl-accent-cyan);
+
+  /* Borders */
+  --gl-border-subtle: color-mix(in srgb, var(--vscode-panel-border, var(--vscode-foreground)) 54%, transparent);
+  --gl-border-default: var(--vscode-widget-border, var(--vscode-panel-border, color-mix(in srgb, var(--vscode-foreground) 22%, transparent)));
+  --gl-border-strong: var(--vscode-contrastBorder, color-mix(in srgb, var(--vscode-foreground) 40%, transparent));
+
+  /* Text */
+  --gl-text-default: var(--vscode-foreground);
+  --gl-text-subtle: var(--vscode-descriptionForeground, color-mix(in srgb, var(--vscode-foreground) 70%, transparent));
+  --gl-text-strong: var(--vscode-editor-foreground, var(--vscode-foreground));
+  --gl-text-link: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #1f75cb));
+
+  /* Feedback */
+  --gl-feedback-success: var(--vscode-testing-iconPassed, #1f883d);
+  --gl-feedback-danger: var(--vscode-testing-iconFailed, #cf222e);
+  --gl-feedback-warning: var(--vscode-editorWarning-foreground, #9a6700);
+  --gl-feedback-info: var(--vscode-editorInfo-foreground, var(--gl-text-link));
+  --gl-feedback-brand: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #1f75cb));
+  --gl-feedback-success-subtle: color-mix(in srgb, var(--gl-feedback-success) 13%, transparent);
+  --gl-feedback-danger-subtle: color-mix(in srgb, var(--gl-feedback-danger) 12%, transparent);
+  --gl-feedback-warning-subtle: color-mix(in srgb, var(--gl-feedback-warning) 14%, transparent);
+  --gl-feedback-info-subtle: color-mix(in srgb, var(--gl-feedback-info) 12%, transparent);
+  --gl-feedback-brand-subtle: color-mix(in srgb, var(--gl-feedback-brand) 13%, transparent);
+
+  /* Spacing and shape */
+  --gl-spacing-2: 2px;
+  --gl-spacing-4: 4px;
+  --gl-spacing-8: 8px;
+  --gl-spacing-12: 12px;
+  --gl-spacing-16: 16px;
+  --gl-spacing-24: 24px;
+  --gl-spacing-32: 32px;
+  --gl-radius-sm: 3px;
+  --gl-radius-md: 6px;
+  --gl-radius-pill: 999px;
+
+  /* Interaction */
+  --gl-focus-ring: var(--vscode-focusBorder, var(--gl-feedback-brand));
+  --gl-hover-surface: color-mix(in srgb, var(--vscode-list-hoverBackground, var(--vscode-foreground)) 72%, transparent);
+  --gl-hover-text: var(--vscode-list-hoverForeground, var(--gl-text-default));
+  --gl-selected-surface: color-mix(in srgb, var(--gl-feedback-brand) 14%, transparent);
+  --gl-selected-text: var(--gl-text-strong);
+  --gl-disabled-opacity: .48;
+  --gl-overlay-shadow: 0 8px 24px color-mix(in srgb, var(--vscode-widget-shadow, black) 35%, transparent);
+
+}
+
+body.vscode-dark {
+  --gl-surface-default: #1f1e24;
+  --gl-surface-subtle: #25232b;
+  --gl-surface-raised: #2c2933;
+  --gl-surface-overlay: #332e3b;
+  --gl-border-default: #403c48;
+  --gl-border-subtle: color-mix(in srgb, #403c48 64%, transparent);
+  --gl-border-strong: #5a5365;
+  --gl-selected-surface: color-mix(in srgb, var(--gl-feedback-brand) 19%, transparent);
+  --gl-hover-surface: color-mix(in srgb, var(--vscode-list-hoverBackground, var(--vscode-foreground)) 62%, transparent);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; min-width: 0; min-height: 100%; margin: 0; }
+body {
+  padding: 0;
+  color: var(--gl-text-default);
+  background: var(--gl-surface-default);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+button, textarea, select, input { font: inherit; }
+button { border: 0; }
+a { color: var(--gl-text-link); }
+
+:where(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--gl-focus-ring);
+  outline-offset: 1px;
+}
+:where(button, input, textarea, select):disabled {
+  cursor: not-allowed;
+  opacity: var(--gl-disabled-opacity);
+}
+
+.gl-input {
+  width: 100%;
+  border: 1px solid var(--vscode-input-border, var(--gl-border-default));
+  border-radius: var(--gl-radius-sm);
+  padding: var(--gl-spacing-8);
+  color: var(--vscode-input-foreground, var(--gl-text-default));
+  background: var(--vscode-input-background, var(--gl-surface-default));
+}
+.gl-input::placeholder { color: var(--vscode-input-placeholderForeground, var(--gl-text-subtle)); }
+.gl-text-subtle { color: var(--gl-text-subtle); }
+.gl-text-success { color: var(--gl-feedback-success); }
+.gl-text-danger { color: var(--gl-feedback-danger); }
+.gl-text-warning { color: var(--gl-feedback-warning); }
+.gl-text-info { color: var(--gl-feedback-info); }
+.gl-truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spin { display: inline-block; animation: gl-spin .9s linear infinite; }
+@keyframes gl-spin { to { transform: rotate(360deg); } }
+.flash { animation: gl-flash 1.5s ease-out; }
+@keyframes gl-flash { from { outline: 2px solid var(--gl-focus-ring); } to { outline-color: transparent; } }
+
+@media (forced-colors: active) {
+  :root {
+    --gl-border-subtle: CanvasText;
+    --gl-border-default: CanvasText;
+    --gl-border-strong: Highlight;
+    --gl-hover-surface: Highlight;
+    --gl-hover-text: HighlightText;
+    --gl-selected-surface: Highlight;
+    --gl-selected-text: HighlightText;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; }
+}

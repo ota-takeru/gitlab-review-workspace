@@ -1,0 +1,127 @@
+{
+  "name": "gitlab-review-workspace",
+  "displayName": "GitLab Review Workspace",
+  "description": "GitLab merge request review experience with threaded comments, review diffs, and editable local review drafts.",
+  "version": "0.0.1",
+  "publisher": "ota-takeru",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ota-takeru/gitlab-review-workspace.git"
+  },
+  "homepage": "https://github.com/ota-takeru/gitlab-review-workspace#readme",
+  "bugs": {
+    "url": "https://github.com/ota-takeru/gitlab-review-workspace/issues"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Source Control",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:gitlabReview.sidebar",
+    "onCommand:gitlabReview.openFile",
+    "onCommand:gitlabReview.login",
+    "onCommand:gitlabReview.refreshAuth",
+    "onCommand:gitlabReview.refreshReview"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "GitLab Review Workspace",
+      "properties": {
+        "gitlabReview.gitlabBaseUrl": {
+          "type": "string",
+          "default": "https://gitlab.com",
+          "description": "GitLab instance URL."
+        },
+        "gitlabReview.projectId": {
+          "type": "string",
+          "default": "",
+          "description": "GitLab project ID or URL-encoded path."
+        },
+        "gitlabReview.mergeRequestIid": {
+          "type": "string",
+          "default": "",
+          "description": "Merge request IID to review."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "gitlabReview.openFile",
+        "title": "GitLab Review: Open Review File"
+      },
+      {
+        "command": "gitlabReview.login",
+        "title": "GitLab Review: Log In with glab"
+      },
+      {
+        "command": "gitlabReview.refreshAuth",
+        "title": "GitLab Review: Refresh glab Login Status"
+      },
+      {
+        "command": "gitlabReview.refreshReview",
+        "title": "GitLab Review: Refresh Merge Request"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gitlabReview",
+          "title": "GitLab Review",
+          "icon": "media/gitlab-review.svg"
+        }
+      ]
+    },
+    "views": {
+      "gitlabReview": [
+        {
+          "id": "gitlabReview.sidebar",
+          "type": "webview",
+          "name": "Merge Request"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
+    "compile": "npm run clean && npm run compile:host && npm run build:webview",
+    "compile:host": "tsc -p ./",
+    "build:webview": "vite build",
+    "watch": "concurrently \"npm:watch:host\" \"npm:watch:webview\"",
+    "watch:host": "tsc -watch -p ./",
+    "watch:webview": "vite build --watch",
+    "storybook": "storybook dev -p 6006",
+    "build:storybook": "storybook build -o storybook-static",
+    "test:storybook": "vitest run --project=storybook",
+    "test:storybook:watch": "vitest --project=storybook",
+    "check": "tsc -p ./ --noEmit && vue-tsc --noEmit -p webview/tsconfig.json",
+    "test": "npm run compile && node --test ./out/test/*.test.js"
+  },
+  "dependencies": {
+    "@gitlab/svgs": "^3.163.0",
+    "diff": "^5.2.0",
+    "vue": "^3.5.17"
+  },
+  "devDependencies": {
+    "@storybook/addon-a11y": "^10.5.0",
+    "@storybook/addon-docs": "^10.5.0",
+    "@storybook/addon-vitest": "^10.5.0",
+    "@storybook/vue3-vite": "^10.5.0",
+    "@types/diff": "^7.0.2",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.95.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vitest/browser-playwright": "^4.1.10",
+    "concurrently": "^9.2.0",
+    "playwright": "^1.61.1",
+    "storybook": "^10.5.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^2.2.10"
+  }
+}
