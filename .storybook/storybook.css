@@ -1,0 +1,27 @@
+html,
+body,
+#storybook-root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+.storybook-vscode-root {
+  min-height: 100vh;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+.storybook-frame {
+  min-width: 0;
+  margin: 0 auto;
+  border: 1px solid var(--gl-border-default);
+  color: var(--gl-text-default);
+  background: var(--gl-surface-default);
+}
+
+.storybook-frame.sidebar-narrow { width: 320px; min-height: 844px; }
+.storybook-frame.sidebar-typical { width: 400px; min-height: 900px; }
+.storybook-frame.editor-compact { width: min(1024px, 100%); min-height: 768px; }

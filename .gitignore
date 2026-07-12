@@ -1,0 +1,9 @@
+node_modules/
+out/
+*.vsix
+.vscode-test/
+.playwright-cli/
+output/
+storybook-static/
+test-results/
+.DS_Store
