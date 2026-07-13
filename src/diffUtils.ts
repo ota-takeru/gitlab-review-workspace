@@ -5,6 +5,19 @@ import {
   ReviewThread
 } from "./reviewTypes";
 
+export interface DiffSideBySideRow<T> {
+  key: string;
+  left?: T;
+  right?: T;
+  fullWidth?: boolean;
+}
+
+interface DiffSideBySideOptions {
+  leftKinds: ReadonlySet<string>;
+  rightKinds: ReadonlySet<string>;
+  contextKinds: ReadonlySet<string>;
+}
+
 interface RemovedLine {
   oldLine: number;
   text: string;
@@ -39,6 +52,59 @@ export function countLineDiff(oldText: string, newText: string): DiffCount {
     }),
     { additions: 0, deletions: 0 }
   );
+}
+
+export function buildSideBySideRows<T extends { kind: string }>(
+  lines: readonly T[],
+  options: DiffSideBySideOptions
+): DiffSideBySideRow<T>[] {
+  const rows: DiffSideBySideRow<T>[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line) break;
+
+    if (options.contextKinds.has(line.kind)) {
+      rows.push({ key: `context-${index}`, left: line, right: line });
+      index += 1;
+      continue;
+    }
+
+    if (options.leftKinds.has(line.kind)) {
+      const leftStart = index;
+      while (index < lines.length && options.leftKinds.has(lines[index]?.kind ?? "")) index += 1;
+      const leftBlock = lines.slice(leftStart, index);
+      const rightStart = index;
+      while (index < lines.length && options.rightKinds.has(lines[index]?.kind ?? "")) index += 1;
+      const rightBlock = lines.slice(rightStart, index);
+      const rowCount = Math.max(leftBlock.length, rightBlock.length);
+
+      for (let offset = 0; offset < rowCount; offset += 1) {
+        rows.push({
+          key: `change-${leftStart}-${rightStart}-${offset}`,
+          left: leftBlock[offset],
+          right: rightBlock[offset]
+        });
+      }
+      continue;
+    }
+
+    if (options.rightKinds.has(line.kind)) {
+      const rightStart = index;
+      while (index < lines.length && options.rightKinds.has(lines[index]?.kind ?? "")) index += 1;
+      const rightBlock = lines.slice(rightStart, index);
+      rightBlock.forEach((right, offset) => {
+        rows.push({ key: `change-${rightStart}-${offset}`, right });
+      });
+      continue;
+    }
+
+    rows.push({ key: `full-${index}`, left: line, fullWidth: true });
+    index += 1;
+  }
+
+  return rows;
 }
 
 export function buildReviewLines(

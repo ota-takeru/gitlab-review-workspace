@@ -270,6 +270,7 @@ test("loadCommitFileContents reads the parent and commit versions of a file", as
 
 test("loadMergeRequest tolerates optional lookup failures and preserves fallback commits", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  const receivedDiscussionArgs: string[][] = [];
   Object.defineProperty(glabCommand, "runGlab", {
     configurable: true,
     value: async (args: string[]) => {
@@ -295,6 +296,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
       }
       if (endpoint?.endsWith("/diffs?per_page=100")) return { ok: true, stdout: "[]" };
       if (endpoint?.endsWith("/discussions?per_page=100")) {
+        receivedDiscussionArgs.push(args);
         return {
           ok: true,
           stdout: JSON.stringify([{ id: "discussion", notes: [{ id: 8, body: "mine?", author: { id: 9 } }] }])
@@ -320,6 +322,15 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
     assert.equal(state.threads[0].comments[0].canEdit, false);
     assert.deepEqual(state.commits, [fallbackCommit]);
     assert.deepEqual(state.reviewers.map((reviewer) => reviewer.username), ["reviewer-one", "reviewer-two"]);
+    assert.deepEqual(receivedDiscussionArgs[0], [
+      "api",
+      "--hostname",
+      "gitlab.example.com",
+      "projects/1/merge_requests/2/discussions?per_page=100",
+      "--paginate",
+      "--output",
+      "json"
+    ]);
   } finally {
     if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
   }

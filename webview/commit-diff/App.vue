@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import { buildCommitFileDiff, parseCommitDiff } from "../../src/commitDiffUtils";
+import type { CommitFileDiffLine, CommitPatchLine } from "../../src/commitDiffUtils";
+import { buildSideBySideRows } from "../../src/diffUtils";
 import type { CommitDiffStatus } from "../../src/reviewTypes";
 import type { CommitDiffMessage, CommitDiffViewState, HostMessage, ReadyMessage } from "../../src/webviewProtocol";
 import GlDiffHeader from "../common/components/GlDiffHeader.vue";
+import GlDiffSideBySideTable, { type GlDiffSideLine } from "../common/components/GlDiffSideBySideTable.vue";
 import GlDiffScopeToggle, { type GlDiffScope } from "../common/components/GlDiffScopeToggle.vue";
-import GlDiffTable from "../common/components/GlDiffTable.vue";
 import GlEmptyState from "../common/components/GlEmptyState.vue";
 import GlIcon, { type GlIconName } from "../common/components/GlIcon.vue";
 import { vscode } from "../common/vscode";
@@ -46,6 +48,29 @@ const fullLines = computed(() => {
 });
 
 const lines = computed(() => scope.value === "file" && state.value?.fullFile ? fullLines.value : patchLines.value);
+type CommitDiffLine = CommitPatchLine | CommitFileDiffLine;
+
+const sideBySideLines = computed(() => {
+  const rows = buildSideBySideRows<CommitDiffLine>(lines.value, {
+    leftKinds: new Set(["deleted"]),
+    rightKinds: new Set(["added"]),
+    contextKinds: new Set(["context"])
+  });
+  return rows.map((row) => ({
+    ...row,
+    left: commitSideLine(row.left, "left"),
+    right: commitSideLine(row.right, "right")
+  }));
+});
+
+function commitSideLine(line: CommitDiffLine | undefined, side: "left" | "right"): GlDiffSideLine | undefined {
+  if (!line) return undefined;
+  return {
+    kind: line.kind,
+    text: line.text,
+    line: side === "left" ? line.oldLine : line.newLine
+  };
+}
 
 const emptyState = computed<EmptyState | undefined>(() => {
   const file = state.value?.file;
@@ -169,20 +194,13 @@ onBeforeUnmount(() => {
         <p v-else>ファイル全体を読み込んでいます…</p>
       </div>
 
-      <GlDiffTable
+      <GlDiffSideBySideTable
         v-else
-        :lines="lines"
-        :ariaLabel="'コミットのファイル差分'"
-      >
-        <template #header>
-          <div class="visually-hidden" role="row">
-            <span role="columnheader">変更前の行番号</span>
-            <span role="columnheader">変更後の行番号</span>
-            <span role="columnheader">変更</span>
-            <span role="columnheader">コード</span>
-          </div>
-        </template>
-      </GlDiffTable>
+        :rows="sideBySideLines"
+        left-label="変更前"
+        right-label="変更後"
+        aria-label="コミットのファイル差分"
+      />
     </section>
   </main>
 </template>

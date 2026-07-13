@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { FileSummary, ReviewThread } from "../reviewTypes";
-import { buildChangedFileTree, reviewThreadAuthors, sortReviewThreads } from "../reviewTreeUtils";
+import {
+  buildChangedFileTree,
+  compactChangedFileTree,
+  reviewThreadAuthors,
+  sortReviewThreads
+} from "../reviewTreeUtils";
 
 function thread(id: string, resolved: boolean, createdAt: string): ReviewThread {
   return {
@@ -62,6 +67,23 @@ test("buildChangedFileTree creates sorted directories and preserves file summari
   assert.equal(tree[0].children[1].path, "src/a.ts");
   assert.equal(tree[0].children[2].path, "src/z.ts");
   assert.equal(tree[0].children[0].children[0].file?.threadCount, 4);
+});
+
+test("compactChangedFileTree joins directory chains until a branch point", () => {
+  const tree = buildChangedFileTree([
+    summary("src/features/review/panel/App.vue", 1),
+    summary("src/features/review/panel/style.css", 0),
+    summary("src/features/review/shared.ts", 0),
+    summary("src/README.md", 0)
+  ]);
+
+  const compacted = compactChangedFileTree(tree);
+  assert.equal(compacted[0].path, "src");
+  assert.equal(compacted[0].children[0].name, "features/review");
+  assert.equal(compacted[0].children[0].path, "src/features/review");
+  assert.equal(compacted[0].children[0].children[0].name, "panel");
+  assert.equal(compacted[0].children[0].children[1].name, "shared.ts");
+  assert.equal(compacted[0].children[0].children[0].children[0].path, "src/features/review/panel/App.vue");
 });
 
 function summary(path: string, threadCount: number): FileSummary {

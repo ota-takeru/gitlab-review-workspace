@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildReviewLines, countLineDiff, splitLines } from "../diffUtils";
+import { buildReviewLines, buildSideBySideRows, countLineDiff, splitLines } from "../diffUtils";
 import { ReviewThread } from "../reviewTypes";
 
 const thread: ReviewThread = {
@@ -28,6 +28,27 @@ test("countLineDiff counts additions and removals independently", () => {
     countLineDiff("one\ntwo\nthree\n", "one\nchanged\nthree\nfour\n"),
     { additions: 2, deletions: 1 }
   );
+});
+
+test("buildSideBySideRows pairs changed blocks and keeps context aligned", () => {
+  const rows = buildSideBySideRows([
+    { kind: "context", text: "same" },
+    { kind: "deleted", text: "old-1" },
+    { kind: "deleted", text: "old-2" },
+    { kind: "added", text: "new-1" },
+    { kind: "context", text: "after" }
+  ], {
+    leftKinds: new Set(["deleted"]),
+    rightKinds: new Set(["added"]),
+    contextKinds: new Set(["context"])
+  });
+
+  assert.deepEqual(rows.map((row) => [row.left?.text, row.right?.text]), [
+    ["same", "same"],
+    ["old-1", "new-1"],
+    ["old-2", undefined],
+    ["after", "after"]
+  ]);
 });
 
 test("MR review rows retain old and MR positions and attach comment threads", () => {
