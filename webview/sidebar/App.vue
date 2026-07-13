@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from "vue";
 import { buildBranchTree } from "../../src/branchTreeUtils";
 import { isCommentEdited } from "../../src/commentUtils";
-import { buildChangedFileTree, reviewThreadAuthors } from "../../src/reviewTreeUtils";
+import { buildChangedFileTree, compactChangedFileTree, reviewThreadAuthors } from "../../src/reviewTreeUtils";
 import {
   formatRelativeReplyTime,
   isCommitDiffForSelection,
@@ -85,7 +85,7 @@ const selectedCommitDiffMatches = computed(() => {
     && isCommitDiffForSelection(model.value!.commitDiff, mrKey.value, commitId);
 });
 const changedFiles = computed(() => overview.value?.files ?? []);
-const changedTree = computed(() => buildChangedFileTree(changedFiles.value));
+const changedTree = computed(() => compactChangedFileTree(buildChangedFileTree(changedFiles.value)));
 const localWorkspace = computed(() => model.value?.localWorkspace);
 const localTarget = computed(() => localWorkspace.value?.target);
 const localTargetBranch = computed(() => {
@@ -587,7 +587,7 @@ onBeforeUnmount(() => {
                 />
                 <GlAvatar v-else name="GitLab user" />
                 <span class="thread-heading">
-                  <span v-if="isThreadCollapsed(thread)" class="thread-summary-line">
+                  <span v-if="isThreadCollapsed(thread) && replyCount(thread) > 0" class="thread-summary-line">
                     <strong class="reply-count-link">{{ replyCount(thread) }} replies</strong>
                     <span class="thread-last-reply gl-truncate">Last reply by <b>{{ lastComment(thread)?.author || "GitLab user" }}</b> {{ relativeReplyTime(thread) }}</span>
                   </span>

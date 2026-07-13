@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import { buildSideBySideRows } from "../../src/diffUtils";
+import type { DiffSideBySideRow } from "../../src/diffUtils";
+import { reviewThreadAuthors } from "../../src/reviewTreeUtils";
 import type { ReviewComment, ReviewLine, ReviewThread } from "../../src/reviewTypes";
 import type { HostMessage, ReviewFileMessage, ReviewFileViewState } from "../../src/webviewProtocol";
 import {
@@ -9,13 +12,14 @@ import {
   threadContentId
 } from "../../src/webviewViewModels";
 import GlAvatar from "../common/components/GlAvatar.vue";
+import GlAvatarGroup from "../common/components/GlAvatarGroup.vue";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlButton from "../common/components/GlButton.vue";
 import GlComment from "../common/components/GlComment.vue";
 import GlCommentForm from "../common/components/GlCommentForm.vue";
 import GlDiffHeader from "../common/components/GlDiffHeader.vue";
+import GlDiffSideBySideTable, { type GlDiffSideLine } from "../common/components/GlDiffSideBySideTable.vue";
 import GlDiffScopeToggle, { type GlDiffScope } from "../common/components/GlDiffScopeToggle.vue";
-import GlDiffTable from "../common/components/GlDiffTable.vue";
 import GlEmptyState from "../common/components/GlEmptyState.vue";
 import GlIcon from "../common/components/GlIcon.vue";
 import GlIconButton from "../common/components/GlIconButton.vue";
@@ -74,11 +78,99 @@ const displayedLines = computed(() => {
   }
   return lines.value.filter((_, index) => visible.has(index));
 });
+
+type ReviewSideLine = GlDiffSideLine<ReviewLine>;
+type ReviewSideBySideRow = DiffSideBySideRow<GlDiffSideLine<unknown>>;
+
+const reviewSideBySideRows = computed<ReviewSideBySideRow[]>(() => {
+  const rows = buildSideBySideRows(displayedLines.value, {
+    leftKinds: new Set(["mr-removed", "local-removed"]),
+    rightKinds: new Set(["mr-added", "local-added"]),
+    contextKinds: new Set(["context"])
+  });
+  return rows.map((row) => ({
+    ...row,
+    left: reviewSideLine(row.left, "left"),
+    right: reviewSideLine(row.right, "right")
+  }));
+});
+
+function reviewSideLine(line: ReviewLine | undefined, side: "left" | "right"): ReviewSideLine | undefined {
+  if (!line) return undefined;
+  return {
+    kind: line.kind,
+    text: line.text,
+    line: side === "left" ? leftLineNumber(line) : rightLineNumber(line),
+    data: line
+  };
+}
+
+function leftLineNumber(line: ReviewLine): number | undefined {
+  return line.kind === "local-removed" ? line.mrLine ?? line.oldLine : line.oldLine;
+}
+
+function rightLineNumber(line: ReviewLine): number | undefined {
+  return line.localLine ?? line.mrLine;
+}
+
+function reviewLineFromSide(side?: GlDiffSideLine): ReviewLine | undefined {
+  return side?.data as ReviewLine | undefined;
+}
+
+function reviewLinesInRow(row: ReviewSideBySideRow): ReviewLine[] {
+  const result: ReviewLine[] = [];
+  for (const side of [row.left, row.right]) {
+    const line = reviewLineFromSide(side);
+    if (line && !result.some((candidate) => candidate.id === line.id)) result.push(line);
+  }
+  return result;
+}
+
+function threadsInSide(side?: GlDiffSideLine): ReviewThread[] {
+  return reviewLineFromSide(side)?.threads ?? [];
+}
+
+function threadsInRow(row: ReviewSideBySideRow): ReviewThread[] {
+  const result: ReviewThread[] = [];
+  for (const thread of [...threadsInSide(row.left), ...threadsInSide(row.right)]) {
+    if (!result.some((candidate) => candidate.id === thread.id)) result.push(thread);
+  }
+  return result;
+}
+
+function primaryLineInRow(row?: ReviewSideBySideRow): ReviewLine | undefined {
+  if (!row) return undefined;
+  return reviewLineFromSide(row.right) ?? reviewLineFromSide(row.left);
+}
+
+function rowContainsLine(row: ReviewSideBySideRow, lineId: string): boolean {
+  return reviewLinesInRow(row).some((line) => line.id === lineId);
+}
+
+function sideClasses(side?: GlDiffSideLine): string[] {
+  const line = reviewLineFromSide(side);
+  return line ? rowClasses(line) : ["empty"];
+}
+
+function sideMarker(side?: GlDiffSideLine): string {
+  const line = reviewLineFromSide(side);
+  return line ? lineMarker(line) : "";
+}
+
+function rowStateLabel(row: ReviewSideBySideRow): string {
+  const labels = reviewLinesInRow(row).map(lineStateLabel);
+  return [...new Set(labels)].join(" / ") || "Diff hunk";
+}
+
+function threadLineLabel(thread: ReviewThread, row: ReviewSideBySideRow): string | number {
+  return thread.line ?? primaryLineInRow(row)?.mrLine ?? "unknown";
+}
+
 const selectedBounds = computed(() => {
   const selection = selectedRange.value;
   if (!selection) return undefined;
-  const start = displayedLines.value.findIndex((line) => line.id === selection.startId);
-  const end = displayedLines.value.findIndex((line) => line.id === selection.endId);
+  const start = reviewSideBySideRows.value.findIndex((row) => rowContainsLine(row, selection.startId));
+  const end = reviewSideBySideRows.value.findIndex((row) => rowContainsLine(row, selection.endId));
   if (start < 0 || end < 0) return undefined;
   return { first: Math.min(start, end), last: Math.max(start, end) };
 });
@@ -269,8 +361,8 @@ function extendDrag(index: number): void {
 }
 
 function updateSelection(): void {
-  const start = displayedLines.value[dragStart];
-  const end = displayedLines.value[dragEnd];
+  const start = primaryLineInRow(reviewSideBySideRows.value[dragStart]);
+  const end = primaryLineInRow(reviewSideBySideRows.value[dragEnd]);
   if (!start || !end) return;
   selectedRange.value = { startId: start.id, endId: end.id };
   persist();
@@ -281,9 +373,10 @@ function finishDrag(): void {
   dragging = false;
   const first = Math.min(dragStart, dragEnd);
   const last = Math.max(dragStart, dragEnd);
-  const selected = displayedLines.value.slice(first, last + 1);
+  const selectedRows = reviewSideBySideRows.value.slice(first, last + 1);
+  const selected = selectedRows.flatMap(reviewLinesInRow);
   const target = [...selected].reverse().find((line) => line.mrLine !== undefined && line.mrLine > 0);
-  const anchor = selected.at(-1);
+  const anchor = primaryLineInRow(selectedRows.at(-1) as ReviewSideBySideRow | undefined);
   if (!target || !anchor) {
     rangeComposer.value = undefined;
     persist();
@@ -402,10 +495,6 @@ function lineStateLabel(line: ReviewLine): string {
   return "Unchanged line";
 }
 
-function lineAt(index: number): ReviewLine {
-  return displayedLines.value[index] as ReviewLine;
-}
-
 function onMessage(event: MessageEvent<HostMessage<ReviewFileViewState>>): void {
   const message = event.data;
   if (handleCommentImageMessage(message)) return;
@@ -508,12 +597,18 @@ onBeforeUnmount(() => {
               {{ thread.resolved ? 'Resolved' : 'Open' }}
             </span>
           </div>
-          <div class="rail-note">
-            <GlAvatar
-              :name="thread.comments.at(-1)?.author || '?'"
-              :avatar-url="thread.comments.at(-1)?.avatarUrl"
-            />
-            <p>{{ thread.comments.at(-1)?.body ?? '' }}</p>
+          <div class="rail-comments">
+            <GlComment
+              v-for="comment in thread.comments"
+              :key="comment.id"
+              :author="comment.author || 'GitLab user'"
+              :avatar-url="comment.avatarUrl"
+              :date="formatDate(comment.createdAt)"
+              :edited="edited(comment)"
+              :pending="comment.pending"
+            >
+              <GlMarkdown :source="comment.body" :project-id="state.projectId" />
+            </GlComment>
           </div>
         </article>
       </aside>
@@ -565,40 +660,55 @@ onBeforeUnmount(() => {
       <span class="legend-item local-del"><span class="legend-swatch" />Local deletion</span>
     </div>
 
-    <GlDiffTable class="code-table" :lines="displayedLines" ariaLabel="File changes">
-      <template #header>
-        <div class="code-header" role="row">
-          <span role="columnheader" title="Old line">Old</span>
-          <span role="columnheader" title="Merge request line">MR</span>
-          <span role="columnheader" title="Working copy line">Local</span>
-          <span role="columnheader" class="sr-only">Change</span>
-          <span role="columnheader">Code</span>
-        </div>
-      </template>
-      <template #line="{ index }">
+    <GlDiffSideBySideTable
+      class="code-table"
+      :rows="reviewSideBySideRows"
+      :left-label="'変更前'"
+      :right-label="model.hasLocalEdit ? 'Working copy' : 'Merge request'"
+      aria-label="File changes"
+    >
+      <template #row="{ row, index }">
         <div
-          :class="['gl-diff-row', 'code-row', ...rowClasses(lineAt(index)), { 'range-selected': isSelected(index) }]"
+          v-if="row.fullWidth"
+          class="split-code-full"
           role="row"
-          data-review-line
-          :data-mr-line="lineAt(index).mrLine"
-          :data-old-line="lineAt(index).oldLine"
-          :aria-selected="isSelected(index)"
-          :aria-label="`${lineStateLabel(lineAt(index))}, ${lineAt(index).mrLine ? `line ${lineAt(index).mrLine}` : 'deleted line'}`"
-          @pointerdown="startDrag($event, index)"
-          @pointerenter="extendDrag(index)"
         >
-          <span class="gl-diff-gutter line-no" role="cell">{{ lineAt(index).oldLine }}</span>
-          <span class="gl-diff-gutter line-no" role="cell">{{ lineAt(index).mrLine }}</span>
-          <span class="gl-diff-gutter line-no" role="cell">{{ lineAt(index).localLine }}</span>
-          <span class="gl-diff-marker change-marker" role="cell" :title="lineStateLabel(lineAt(index))">{{ lineMarker(lineAt(index)) }}</span>
-          <pre class="gl-diff-code code" role="cell"><code>{{ lineAt(index).text || ' ' }}</code></pre>
-          <span v-if="lineAt(index).threads.length" class="line-discussions" :title="`${lineAt(index).threads.length} discussions`">
-            <GlIcon name="comment" :size="12" />{{ lineAt(index).threads.length }}
-          </span>
+          <code role="cell">{{ row.left?.text ?? row.right?.text ?? ' ' }}</code>
         </div>
 
         <div
-          v-if="rangeComposer?.anchorId === lineAt(index).id"
+          v-else
+          :class="['split-code-row', { 'range-selected': isSelected(index) }]"
+          role="row"
+          data-review-line
+          :data-mr-line="primaryLineInRow(row)?.mrLine"
+          :data-old-line="reviewLineFromSide(row.left)?.oldLine"
+          :aria-selected="isSelected(index)"
+          :aria-label="`${rowStateLabel(row)}, ${primaryLineInRow(row)?.mrLine ? `line ${primaryLineInRow(row)?.mrLine}` : 'deleted line'}`"
+          @pointerdown="startDrag($event, index)"
+          @pointerenter="extendDrag(index)"
+        >
+          <div class="split-code-side" :class="sideClasses(row.left)" role="cell">
+            <span class="split-line-no">{{ row.left?.line ?? '' }}</span>
+            <span class="split-change-marker" :title="row.left ? rowStateLabel({ key: row.key, left: row.left }) : ''">{{ sideMarker(row.left) }}</span>
+            <pre class="split-code"><code>{{ row.left?.text || ' ' }}</code></pre>
+            <span v-if="threadsInSide(row.left).length" class="line-discussions" :title="`${threadsInSide(row.left).length} discussions`">
+              <GlIcon name="comment" :size="12" />{{ threadsInSide(row.left).length }}
+            </span>
+          </div>
+
+          <div class="split-code-side" :class="sideClasses(row.right)" role="cell">
+            <span class="split-line-no">{{ row.right?.line ?? '' }}</span>
+            <span class="split-change-marker" :title="row.right ? rowStateLabel({ key: row.key, right: row.right }) : ''">{{ sideMarker(row.right) }}</span>
+            <pre class="split-code"><code>{{ row.right?.text || ' ' }}</code></pre>
+            <span v-if="threadsInSide(row.right).length" class="line-discussions" :title="`${threadsInSide(row.right).length} discussions`">
+              <GlIcon name="comment" :size="12" />{{ threadsInSide(row.right).length }}
+            </span>
+          </div>
+        </div>
+
+        <div
+          v-if="rangeComposer && rowContainsLine(row, rangeComposer.anchorId)"
           class="new-discussion"
           aria-label="New discussion"
         >
@@ -622,7 +732,7 @@ onBeforeUnmount(() => {
         </div>
 
         <article
-          v-for="thread in lineAt(index).threads"
+          v-for="thread in threadsInRow(row)"
           :key="thread.id"
           class="discussion"
           :class="{ resolved: thread.resolved, pending: thread.pending, collapsed: isThreadCollapsed(thread) }"
@@ -634,24 +744,27 @@ onBeforeUnmount(() => {
               type="button"
               :aria-expanded="!isThreadCollapsed(thread)"
               :aria-controls="threadPanelId(thread)"
-              :aria-label="`${isThreadCollapsed(thread) ? 'Expand' : 'Collapse'} discussion on line ${thread.line ?? lineAt(index).mrLine ?? 'unknown'}`"
+              :aria-label="`${isThreadCollapsed(thread) ? 'Expand' : 'Collapse'} discussion on line ${threadLineLabel(thread, row)}`"
               @click.stop="toggleThread(thread)"
             >
               <GlIcon name="chevron-right" :size="12" />
-              <GlAvatar
-                :name="lastComment(thread)?.author || 'GitLab user'"
-                :avatar-url="lastComment(thread)?.avatarUrl"
+              <GlAvatarGroup
+                v-if="reviewThreadAuthors(thread).length"
+                :items="reviewThreadAuthors(thread)"
+                aria-label="Reply authors"
+                size="small"
               />
+              <GlAvatar v-else name="GitLab user" size="small" />
               <span class="discussion-heading">
-                <span v-if="isThreadCollapsed(thread)" class="discussion-summary-line">
+                <span v-if="isThreadCollapsed(thread) && replyCount(thread) > 0" class="discussion-summary-line">
                   <strong class="reply-count-link">{{ replyCount(thread) }} replies</strong>
                   <span class="discussion-last-reply gl-truncate">Last reply by <b>{{ lastComment(thread)?.author || 'GitLab user' }}</b> {{ relativeReplyTime(thread) }}</span>
                 </span>
                 <template v-else>
-                  <strong class="discussion-expanded-title">Discussion on line {{ thread.line ?? lineAt(index).mrLine ?? '—' }}</strong>
+                  <strong class="discussion-expanded-title">Discussion on line {{ threadLineLabel(thread, row) }}</strong>
                   <span class="discussion-last-reply">{{ thread.comments.length }} comments</span>
                 </template>
-                <span v-if="isThreadCollapsed(thread)" class="discussion-location">Line {{ thread.line ?? lineAt(index).mrLine ?? '—' }}</span>
+                <span v-if="isThreadCollapsed(thread)" class="discussion-location">Line {{ threadLineLabel(thread, row) }}</span>
               </span>
             </button>
             <GlThreadStatusAction
@@ -719,7 +832,7 @@ onBeforeUnmount(() => {
           </div>
         </article>
       </template>
-    </GlDiffTable>
+    </GlDiffSideBySideTable>
   </main>
 </template>
 
@@ -774,49 +887,39 @@ onBeforeUnmount(() => {
 .local-del .legend-swatch { background: color-mix(in srgb, var(--gl-local-accent) 14%, transparent); }
 
 .code-table { width: 100%; overflow: auto; }
-.code-header,
-.code-row {
+.split-code-row {
   display: grid;
-  grid-template-columns: repeat(3, 30px) 24px minmax(0, 1fr);
-  min-width: 420px;
-}
-
-.code-header {
-  border-bottom: 1px solid var(--gl-border-default);
-  color: var(--gl-text-subtle);
-  background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
-  font-size: 9px;
-  line-height: 20px;
-  text-transform: uppercase;
-}
-
-.code-header span { padding-inline: var(--gl-spacing-4); text-align: center; }
-.code-header span:last-child { text-align: left; }
-.code-row {
-  position: relative;
-  min-width: 0;
-  min-height: 22px;
-  border-bottom: 0;
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  min-width: 640px;
   cursor: crosshair;
   user-select: none;
 }
 
-.code-row.context { background: var(--gl-surface-default); }
-.code-row.mr-added { background: var(--vscode-diffEditor-insertedLineBackground, color-mix(in srgb, var(--gl-feedback-success) 12%, transparent)); }
-.code-row.mr-removed { background: var(--vscode-diffEditor-removedLineBackground, color-mix(in srgb, var(--gl-feedback-danger) 12%, transparent)); }
-.code-row.local-added { background: color-mix(in srgb, var(--gl-local-accent) 11%, var(--vscode-editor-background)); }
-.code-row.local-removed { background: color-mix(in srgb, var(--gl-local-accent) 12%, var(--vscode-editor-background)); }
-.code-row.mr-added-source:not(.mr-added) { box-shadow: inset 2px 0 var(--vscode-gitDecoration-addedResourceForeground, var(--gl-feedback-success)); }
-.code-row.hunk { color: var(--vscode-editorInfo-foreground, var(--gl-feedback-info)); background: var(--vscode-editor-lineHighlightBackground); }
-.code-row.range-selected {
+.split-code-side {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 42px 22px minmax(0, 1fr);
+  min-height: 22px;
+  border-right: 1px solid var(--gl-border-default);
+}
+
+.split-code-side:last-child { border-right: 0; }
+.split-code-side.context { background: var(--gl-surface-default); }
+.split-code-side.mr-added { background: var(--vscode-diffEditor-insertedLineBackground, color-mix(in srgb, var(--gl-feedback-success) 12%, transparent)); }
+.split-code-side.mr-removed { background: var(--vscode-diffEditor-removedLineBackground, color-mix(in srgb, var(--gl-feedback-danger) 12%, transparent)); }
+.split-code-side.local-added { background: color-mix(in srgb, var(--gl-local-accent) 11%, var(--vscode-editor-background)); }
+.split-code-side.local-removed { background: color-mix(in srgb, var(--gl-local-accent) 12%, var(--vscode-editor-background)); }
+.split-code-side.empty { background: var(--vscode-editor-background); }
+.split-code-row.range-selected {
   z-index: 1;
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
   background: var(--gl-selected-surface);
 }
 
-.line-no,
-.change-marker {
+.split-line-no,
+.split-change-marker {
   min-height: 22px;
   padding: 3px var(--gl-spacing-4);
   border-right: 1px solid color-mix(in srgb, var(--gl-border-default) 58%, transparent);
@@ -828,12 +931,12 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 
-.change-marker { padding-inline: 0; font-weight: 700; text-align: center; }
-.mr-added .change-marker { color: var(--vscode-gitDecoration-addedResourceForeground, var(--gl-feedback-success)); }
-.mr-removed .change-marker { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--gl-feedback-danger)); }
-.local-added .change-marker,
-.local-removed .change-marker { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--gl-feedback-info)); font-size: 9px; }
-.code {
+.split-change-marker { padding-inline: 0; font-weight: 700; text-align: center; }
+.split-code-side.mr-added .split-change-marker { color: var(--vscode-gitDecoration-addedResourceForeground, var(--gl-feedback-success)); }
+.split-code-side.mr-removed .split-change-marker { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--gl-feedback-danger)); }
+.split-code-side.local-added .split-change-marker,
+.split-code-side.local-removed .split-change-marker { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--gl-feedback-info)); font-size: 9px; }
+.split-code {
   min-width: 0;
   min-height: 22px;
   margin: 0;
@@ -847,6 +950,16 @@ onBeforeUnmount(() => {
   font: var(--vscode-editor-font-size)/1.35 var(--vscode-editor-font-family);
   tab-size: 2;
 }
+
+.split-code-full {
+  min-width: 640px;
+  padding: var(--gl-spacing-4) var(--gl-spacing-12);
+  color: var(--gl-text-link);
+  background: var(--gl-feedback-brand-subtle);
+  font: var(--vscode-editor-font-size)/1.35 var(--vscode-editor-font-family);
+}
+
+.split-code-full code { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .line-discussions {
   position: absolute;
@@ -867,7 +980,7 @@ onBeforeUnmount(() => {
 .new-discussion,
 .discussion {
   width: min(820px, calc(100vw - 150px));
-  margin: var(--gl-spacing-8) var(--gl-spacing-12) var(--gl-spacing-12) 114px;
+  margin: var(--gl-spacing-8) var(--gl-spacing-12) var(--gl-spacing-12);
   border: 1px solid var(--gl-border-default);
   border-radius: var(--gl-radius-md);
   background: var(--gl-surface-raised);
@@ -994,8 +1107,7 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 
-.rail-note { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--gl-spacing-8); padding: var(--gl-spacing-8); }
-.rail-note p { margin: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.rail-comments { display: grid; }
 
 .flash { outline: 1px solid var(--gl-focus-ring); outline-offset: -1px; animation: file-flash 1.5s ease-out; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
@@ -1007,9 +1119,6 @@ onBeforeUnmount(() => {
 
 @media (max-width: 760px) {
   .context-copy { flex-basis: 100%; }
-  .code-header,
-  .code-row { grid-template-columns: repeat(3, 26px) 22px minmax(0, 1fr); min-width: 0; }
-  :deep(.gl-diff-row.code-row) { min-width: 0; }
   .new-discussion,
   .discussion { width: calc(100vw - 24px); margin-left: var(--gl-spacing-12); }
   .edit-layout { grid-template-columns: 1fr; }

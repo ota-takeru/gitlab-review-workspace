@@ -228,7 +228,7 @@ export class GitLabReviewClient {
       this.getJson<GitLabDiff[]>(
         `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/diffs?per_page=100`
       ),
-      this.getJson<GitLabDiscussion[]>(
+      this.getPaginatedJson<GitLabDiscussion[]>(
         `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/discussions?per_page=100`
       ),
       this.getJson<GitLabUser>("user").catch(() => undefined),

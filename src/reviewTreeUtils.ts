@@ -72,6 +72,37 @@ export function buildChangedFileTree(files: readonly FileSummary[]): ChangedFile
   return root.children;
 }
 
+/**
+ * Keeps changed-file trees readable by joining directory chains that do not
+ * contain a meaningful branch point into one compact directory row.
+ */
+export function compactChangedFileTree(nodes: readonly ChangedFileTreeNode[]): ChangedFileTreeNode[] {
+  return nodes.map(compactChangedFileTreeNode);
+}
+
+function compactChangedFileTreeNode(node: ChangedFileTreeNode): ChangedFileTreeNode {
+  if (node.type === "file") {
+    return node;
+  }
+
+  let name = node.name;
+  let path = node.path;
+  let children = node.children;
+  while (children.length === 1 && children[0]?.type === "tree") {
+    const child = children[0];
+    name = `${name}/${child.name}`;
+    path = child.path;
+    children = child.children;
+  }
+
+  return {
+    ...node,
+    name,
+    path,
+    children: children.map(compactChangedFileTreeNode)
+  };
+}
+
 function firstCreatedAt(thread: ReviewThread): string {
   return thread.comments[0]?.createdAt ?? "";
 }
