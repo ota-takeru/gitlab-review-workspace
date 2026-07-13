@@ -136,7 +136,7 @@ export function normalizeGitLabRemoteUrl(value: string): NormalizedGitLabRemote 
   } else {
     try {
       const parsed = new URL(raw);
-      hostname = parsed.hostname;
+      hostname = parsed.host;
       projectPath = parsed.pathname;
     } catch {
       return undefined;
