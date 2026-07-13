@@ -2,7 +2,7 @@
   "name": "gitlab-review-workspace",
   "displayName": "GitLab Review Workspace",
   "description": "GitLab merge request review experience with threaded comments, review diffs, and editable local review drafts.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "ota-takeru",
   "repository": {
     "type": "git",
