@@ -54,7 +54,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.registerFileSystemProvider(branchFiles.scheme, branchFiles, { isReadonly: true }),
     vscode.window.registerWebviewViewProvider("gitlabReview.sidebar", sidebar, {
       webviewOptions: {
-        retainContextWhenHidden: true
+        retainContextWhenHidden: false
       }
     }),
     vscode.commands.registerCommand(

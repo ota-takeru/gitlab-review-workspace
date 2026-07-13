@@ -171,6 +171,68 @@ test("updateComment sends a PUT to the discussion note endpoint", async () => {
   }
 });
 
+test("createOverviewThread posts a positionless merge request discussion", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  let receivedArgs: string[] | undefined;
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      receivedArgs = args;
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          id: "discussion-1",
+          resolvable: false,
+          notes: [{
+            id: 56,
+            body: "Please review the overall approach.",
+            author: { id: 9, username: "me" },
+            created_at: "2026-07-13T10:00:00.000Z"
+          }]
+        })
+      };
+    }
+  });
+
+  try {
+    const thread = await new GitLabReviewClient("gitlab.example.com").createOverviewThread(
+      {
+        id: "group/project!4",
+        projectId: "group/project",
+        mergeRequestIid: 4,
+        title: "MR",
+        state: "opened",
+        sourceBranch: "source",
+        targetBranch: "main",
+        author: "me",
+        reviewers: [],
+        commits: [],
+        files: [],
+        threads: []
+      },
+      "Please review the overall approach."
+    );
+
+    assert.deepEqual(receivedArgs, [
+      "api",
+      "--hostname",
+      "gitlab.example.com",
+      "--method",
+      "POST",
+      "projects/group%2Fproject/merge_requests/4/discussions",
+      "--raw-field",
+      "body=Please review the overall approach.",
+      "--output",
+      "json"
+    ]);
+    assert.equal(thread.filePath, undefined);
+    assert.equal(thread.resolvable, false);
+    assert.equal(thread.comments[0]?.canEdit, true);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
 test("listMergeRequestCommits requests the paginated MR commits endpoint", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   let receivedArgs: string[] | undefined;
@@ -268,9 +330,62 @@ test("loadCommitFileContents reads the parent and commit versions of a file", as
   }
 });
 
+test("loadMergeRequestFileContents fetches only the selected file versions", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  const endpoints: string[] = [];
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      endpoints.push(args[3] ?? "");
+      return { ok: true, stdout: args[3]?.includes("ref=base") ? "before\n" : "after\n" };
+    }
+  });
+  try {
+    const contents = await new GitLabReviewClient("gitlab.example.com").loadMergeRequestFileContents(
+      {
+        id: "group/project!4",
+        projectId: "group/project",
+        mergeRequestIid: 4,
+        title: "MR",
+        state: "opened",
+        sourceBranch: "feature",
+        targetBranch: "main",
+        author: "author",
+        reviewers: [],
+        commits: [],
+        files: [],
+        threads: [],
+        diffRefs: { baseSha: "base", startSha: "start", headSha: "head" }
+      },
+      {
+        path: "src/review.ts",
+        language: "typescript",
+        oldPath: "src/review.ts",
+        newPath: "src/review.ts",
+        patch: "@@ -1 +1 @@\n-before\n+after",
+        status: "modified",
+        newFile: false,
+        deletedFile: false,
+        renamedFile: false,
+        collapsed: false,
+        tooLarge: false,
+        generatedFile: false,
+        additions: 1,
+        deletions: 1
+      }
+    );
+    assert.deepEqual(contents, { oldText: "before\n", mrText: "after\n" });
+    assert.equal(endpoints.length, 2);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
 test("loadMergeRequest tolerates optional lookup failures and preserves fallback commits", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   const receivedDiscussionArgs: string[][] = [];
+  const receivedDiffArgs: string[][] = [];
+  let rawFileRequests = 0;
   Object.defineProperty(glabCommand, "runGlab", {
     configurable: true,
     value: async (args: string[]) => {
@@ -294,7 +409,20 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
           })
         };
       }
-      if (endpoint?.endsWith("/diffs?per_page=100")) return { ok: true, stdout: "[]" };
+      if (endpoint?.endsWith("/diffs?per_page=100")) {
+        receivedDiffArgs.push(args);
+        return {
+          ok: true,
+          stdout: JSON.stringify([{
+            old_path: "src/review.ts",
+            new_path: "src/review.ts",
+            diff: "@@ -1 +1 @@\n-old\n+new",
+            new_file: false,
+            deleted_file: false,
+            renamed_file: false
+          }])
+        };
+      }
       if (endpoint?.endsWith("/discussions?per_page=100")) {
         receivedDiscussionArgs.push(args);
         return {
@@ -305,6 +433,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
           ].join("\n")
         };
       }
+      if (endpoint?.includes("/repository/files/")) rawFileRequests += 1;
       return { ok: false, stdout: "" };
     }
   });
@@ -326,6 +455,11 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
     assert.equal(state.threads[0].comments[0].canEdit, false);
     assert.deepEqual(state.commits, [fallbackCommit]);
     assert.deepEqual(state.reviewers.map((reviewer) => reviewer.username), ["reviewer-one", "reviewer-two"]);
+    assert.equal(rawFileRequests, 0);
+    assert.equal(state.files[0]?.path, "src/review.ts");
+    assert.equal(state.files[0]?.additions, 1);
+    assert.equal(state.files[0]?.deletions, 1);
+    assert.deepEqual(receivedDiffArgs[0]?.slice(-3), ["--paginate", "--output", "ndjson"]);
     assert.deepEqual(receivedDiscussionArgs[0], [
       "api",
       "--hostname",

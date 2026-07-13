@@ -30,13 +30,54 @@ export interface ReviewThread {
   comments: ReviewComment[];
 }
 
+export interface ReviewThreadSummary {
+  id: string;
+  filePath?: string;
+  line?: number;
+  oldLine?: number;
+  newLine?: number;
+  resolved: boolean;
+  resolvable?: boolean;
+  pending?: boolean;
+  commentCount: number;
+  authors: Array<{ id?: string; name: string; avatarUrl?: string }>;
+  lastComment?: { author: string; createdAt: string };
+}
+
 export interface ReviewFile {
   path: string;
   language: string;
+  oldPath: string;
+  newPath: string;
+  patch?: string;
+  status: CommitDiffStatus;
+  newFile: boolean;
+  deletedFile: boolean;
+  renamedFile: boolean;
+  collapsed: boolean;
+  tooLarge: boolean;
+  generatedFile: boolean;
+  additions: number;
+  deletions: number;
+}
+
+export interface ReviewFileView {
+  path: string;
+  language: string;
+  oldPath: string;
+  newPath: string;
+  status: CommitDiffStatus;
+  newFile: boolean;
+  deletedFile: boolean;
+  renamedFile: boolean;
+  collapsed: boolean;
+  tooLarge: boolean;
+  generatedFile: boolean;
+}
+
+export interface ReviewFileContents {
   oldText: string;
   mrText: string;
-  oldPath?: string;
-  newPath?: string;
 }
 
 export interface LocalEdit {
@@ -96,7 +137,7 @@ export interface ReviewOverview {
   reviewers: ReviewUser[];
   commits: ReviewCommit[];
   files: FileSummary[];
-  threads: ReviewThread[];
+  threads: ReviewThreadSummary[];
   totalComments: number;
   unresolvedThreads: number;
   resolvedThreads: number;
@@ -128,6 +169,8 @@ export interface CommitDiffFile {
   collapsed: boolean;
   tooLarge: boolean;
 }
+
+export type CommitDiffFileSummary = Omit<CommitDiffFile, "diff">;
 
 export interface CommitFileContents {
   oldText: string;
@@ -199,15 +242,25 @@ export interface ReviewLine {
   mrLine?: number;
   localLine?: number;
   mrAdded?: boolean;
-  threads: ReviewThread[];
+  threadIds: string[];
 }
 
 export interface FileReviewViewModel {
-  file: ReviewFile;
+  file: ReviewFileView;
   summary: FileSummary;
   threads: ReviewThread[];
   lines: ReviewLine[];
-  editableText: string;
+  editableText?: string;
   hasLocalEdit: boolean;
   localEditUpdatedAt?: string;
+  contentMode: "patch" | "full";
+  fullFileState: "not-loaded" | "loading" | "loaded" | "too-large" | "binary" | "error";
+  fullFileMessage?: string;
+  lineWindow: {
+    start: number;
+    end: number;
+    total: number;
+    hasPrevious: boolean;
+    hasNext: boolean;
+  };
 }

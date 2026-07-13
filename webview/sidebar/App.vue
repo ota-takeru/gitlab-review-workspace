@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from "vue";
 import { buildBranchTree } from "../../src/branchTreeUtils";
 import { isCommentEdited } from "../../src/commentUtils";
-import { buildChangedFileTree, compactChangedFileTree, reviewThreadAuthors } from "../../src/reviewTreeUtils";
 import {
   formatRelativeReplyTime,
   isCommitDiffForSelection,
@@ -12,7 +11,7 @@ import {
   threadContentId
 } from "../../src/webviewViewModels";
 import type { MyWorkMergeRequest } from "../../src/myWorkTypes";
-import type { ReviewComment, ReviewThread, ReviewThreadSortOrder } from "../../src/reviewTypes";
+import type { ReviewComment, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
 import type { HostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlAvatar from "../common/components/GlAvatar.vue";
@@ -26,7 +25,6 @@ import GlIconButton from "../common/components/GlIconButton.vue";
 import GlMarkdown from "../common/components/GlMarkdown.vue";
 import GlSection from "../common/components/GlSection.vue";
 import GlStatusBadge from "../common/components/GlStatusBadge.vue";
-import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
 import GlReviewerList from "../common/components/GlReviewerList.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
 import { vscode } from "../common/vscode";
@@ -43,6 +41,7 @@ interface UiState {
   editDrafts?: Record<string, string>;
   editingComments?: Record<string, boolean>;
   collapsedThreads?: Record<string, boolean>;
+  overviewThreadDrafts?: Record<string, string>;
   myWorkScrollTop?: number;
 }
 
@@ -57,16 +56,26 @@ const replyDrafts = reactive<Record<string, string>>(saved.replyDrafts ?? {});
 const editDrafts = reactive<Record<string, string>>(saved.editDrafts ?? {});
 const editingComments = reactive<Record<string, boolean>>(saved.editingComments ?? {});
 const collapsedThreads = reactive<Record<string, boolean>>(saved.collapsedThreads ?? {});
+const overviewThreadDrafts = reactive<Record<string, string>>(saved.overviewThreadDrafts ?? {});
 const resolvedByThread = new Map<string, boolean>();
+const requestedThreadDetails = new Set<string>();
+let loadedMrKey = "";
 let readyRetry: number | undefined;
 
 const overview = computed(() => model.value?.overview);
+const threadDetailsById = computed(() => new Map((model.value?.threadDetails ?? []).map((thread) => [thread.id, thread])));
 const activeTab = computed(() => model.value?.activeTab ?? "review");
 const attentionCount = computed(() => model.value?.myWork.attentionCount ?? 0);
 const branchTree = computed(() => buildBranchTree(model.value?.branchTree.entries ?? []));
 const mrKey = computed(() => {
   const selected = overview.value?.selectedMergeRequest;
   return selected ? `${selected.projectId}!${selected.iid}` : "";
+});
+const overviewThreadDraft = computed({
+  get: () => overviewThreadDrafts[mrKey.value] ?? "",
+  set: (value: string) => {
+    if (mrKey.value) overviewThreadDrafts[mrKey.value] = value;
+  }
 });
 const commentProjectId = computed(() => overview.value?.selectedMergeRequest?.projectId);
 const filteredCommits = computed(() => {
@@ -85,7 +94,10 @@ const selectedCommitDiffMatches = computed(() => {
     && isCommitDiffForSelection(model.value!.commitDiff, mrKey.value, commitId);
 });
 const changedFiles = computed(() => overview.value?.files ?? []);
-const changedTree = computed(() => compactChangedFileTree(buildChangedFileTree(changedFiles.value)));
+const changedFileLimit = ref(200);
+const visibleChangedFiles = computed(() => changedFiles.value.slice(0, changedFileLimit.value));
+const commitFileLimit = ref(200);
+const visibleCommitFiles = computed(() => (model.value?.commitDiff.files ?? []).slice(0, commitFileLimit.value));
 const localWorkspace = computed(() => model.value?.localWorkspace);
 const localTarget = computed(() => localWorkspace.value?.target);
 const localTargetBranch = computed(() => {
@@ -137,6 +149,7 @@ function persist(): void {
     editDrafts: { ...editDrafts },
     editingComments: { ...editingComments },
     collapsedThreads: { ...collapsedThreads },
+    overviewThreadDrafts: { ...overviewThreadDrafts },
     myWorkScrollTop: myWorkScrollTop.value
   });
 }
@@ -183,26 +196,37 @@ function sendReply(threadId: string): void {
   delete replyDrafts[threadId];
   persist();
 }
-function openThread(thread: ReviewThread): void {
-  if (thread.filePath) post({ type: "openFile", filePath: thread.filePath, line: thread.line, threadId: thread.id });
-}
-function collapseKey(thread: ReviewThread): string {
-  return threadCollapseKey(mrKey.value || "no-merge-request", thread.id);
-}
-function isThreadCollapsed(thread: ReviewThread): boolean {
-  return collapsedThreads[collapseKey(thread)] ?? thread.resolved;
-}
-function toggleThread(thread: ReviewThread): void {
-  collapsedThreads[collapseKey(thread)] = !isThreadCollapsed(thread);
+function addOverviewThread(): void {
+  const body = overviewThreadDraft.value;
+  if (!body.trim()) return;
+  post({ type: "addOverviewThread", body });
+  delete overviewThreadDrafts[mrKey.value];
   persist();
 }
-function threadPanelId(thread: ReviewThread): string {
+function openThread(thread: ReviewThreadSummary): void {
+  if (thread.filePath) post({ type: "openFile", filePath: thread.filePath, line: thread.line, threadId: thread.id });
+}
+function collapseKey(thread: ReviewThreadSummary): string {
+  return threadCollapseKey(mrKey.value || "no-merge-request", thread.id);
+}
+function isThreadCollapsed(thread: ReviewThreadSummary): boolean {
+  return collapsedThreads[collapseKey(thread)] ?? (thread.resolved || (overview.value?.threads.length ?? 0) > 20);
+}
+function toggleThread(thread: ReviewThreadSummary): void {
+  const collapsed = !isThreadCollapsed(thread);
+  collapsedThreads[collapseKey(thread)] = collapsed;
+  if (collapsed) requestedThreadDetails.delete(thread.id);
+  else requestedThreadDetails.add(thread.id);
+  persist();
+  post({ type: "setThreadExpanded", threadId: thread.id, expanded: !collapsed });
+}
+function threadPanelId(thread: ReviewThreadSummary): string {
   return threadContentId("sidebar", mrKey.value || "no-merge-request", thread.id);
 }
-function lastComment(thread: ReviewThread): ReviewComment | undefined { return thread.comments.at(-1); }
-function replyCount(thread: ReviewThread): number { return Math.max(0, thread.comments.length - 1); }
-function relativeReplyTime(thread: ReviewThread): string { return formatRelativeReplyTime(lastComment(thread)?.createdAt); }
-function reconcileThreads(threads: readonly ReviewThread[]): void {
+function lastComment(thread: ReviewThreadSummary): ReviewThreadSummary["lastComment"] { return thread.lastComment; }
+function replyCount(thread: ReviewThreadSummary): number { return Math.max(0, thread.commentCount - 1); }
+function relativeReplyTime(thread: ReviewThreadSummary): string { return formatRelativeReplyTime(lastComment(thread)?.createdAt); }
+function reconcileThreads(threads: readonly ReviewThreadSummary[]): void {
   let changed = false;
   for (const thread of threads) {
     const key = collapseKey(thread);
@@ -219,6 +243,7 @@ function reconcileThreads(threads: readonly ReviewThread[]): void {
   if (changed) persist();
 }
 function selectCommit(commitId: string): void {
+  commitFileLimit.value = 200;
   const alreadySelected = selectedCommitId.value === commitId;
   if (commitId !== "all" && alreadySelected) {
     commitSelection.value = { mrKey: mrKey.value, commitId: "all" };
@@ -290,8 +315,23 @@ function receiveState(event: MessageEvent<HostMessage<SidebarViewState>>): void 
   if (handleCommentImageMessage(message)) return;
   if (message.type !== "state") return;
   stopReadyRetry();
+  const selected = message.state.overview.selectedMergeRequest;
+  const nextMrKey = selected ? `${selected.projectId}!${selected.iid}` : "";
+  if (nextMrKey !== loadedMrKey) {
+    loadedMrKey = nextMrKey;
+    changedFileLimit.value = 200;
+    commitFileLimit.value = 200;
+    requestedThreadDetails.clear();
+  }
   model.value = message.state;
   reconcileThreads(message.state.overview.threads);
+  const availableDetails = new Set(message.state.threadDetails.map((thread) => thread.id));
+  for (const threadId of availableDetails) requestedThreadDetails.delete(threadId);
+  for (const thread of message.state.overview.threads) {
+    if (isThreadCollapsed(thread) || availableDetails.has(thread.id) || requestedThreadDetails.has(thread.id)) continue;
+    requestedThreadDetails.add(thread.id);
+    post({ type: "setThreadExpanded", threadId: thread.id, expanded: true });
+  }
   const normalized = normalizeCommitFilter(
     mrKey.value,
     message.state.overview.commits.map((commit) => commit.id),
@@ -467,18 +507,33 @@ onBeforeUnmount(() => {
             <GlIcon :name="changedFilesExpanded ? 'chevron-up' : 'chevron-down'" :size="14" />
           </span>
         </button>
-        <div id="changed-files-content" v-show="changedFilesExpanded" class="collapsible-section-content">
+        <div v-if="changedFilesExpanded" id="changed-files-content" class="collapsible-section-content">
           <GlEmptyState v-if="!changedFiles.length" title="No changed files" icon="file" compact />
-          <div v-else class="changed-scroll" :class="{ scrollable: changedFiles.length > 4 }">
-            <TreeItem
-              v-for="node in changedTree"
-              :key="node.path"
-              :node="node"
-              kind="changed"
-              :active-file-path="model?.activeFilePath"
-              @open-changed="openChangedFile"
-              @open-branch="() => {}"
-            />
+          <div v-else class="changed-scroll changed-flat-list" :class="{ scrollable: changedFiles.length > 4 }">
+            <button
+              v-for="file in visibleChangedFiles"
+              :key="file.path"
+              type="button"
+              class="changed-flat-file"
+              :class="{ 'active-file': model?.activeFilePath === file.path }"
+              :title="file.path"
+              @click="openChangedFile(file.path)"
+            >
+              <GlIcon name="file" :size="14" />
+              <span class="changed-flat-path gl-truncate">{{ file.path }}</span>
+              <span class="file-stats">
+                <span v-if="file.additions" class="gl-text-success">+{{ file.additions }}</span>
+                <span v-if="file.deletions" class="gl-text-danger">−{{ file.deletions }}</span>
+                <span v-if="file.unresolvedThreadCount" class="discussion-count"><GlIcon name="comments" :size="12" />{{ file.unresolvedThreadCount }}</span>
+                <GlIcon v-if="file.hasLocalEdit" class="local-edit-mark" name="pencil" :size="12" label="ローカル編集あり" />
+              </span>
+            </button>
+            <GlButton
+              v-if="visibleChangedFiles.length < changedFiles.length"
+              class="changed-load-more"
+              size="small"
+              @click="changedFileLimit += 200"
+            >Show 200 more</GlButton>
           </div>
         </div>
       </section>
@@ -495,7 +550,7 @@ onBeforeUnmount(() => {
           <span class="collapsible-section-title"><GlIcon name="commit" /><strong>Commits</strong><span class="collapsible-section-count">{{ overview.commits.length }}</span></span>
           <GlIcon :name="commitsExpanded ? 'chevron-up' : 'chevron-down'" :size="14" />
         </button>
-        <div id="commits-content" v-show="commitsExpanded" class="collapsible-section-content">
+        <div v-if="commitsExpanded" id="commits-content" class="collapsible-section-content">
           <div v-if="overview.commits.length" class="commit-timeline" aria-label="Commit filter">
             <button type="button" :class="{ active: currentCommitId() === 'all' }" @click="selectCommit('all')">All</button>
             <button
@@ -535,7 +590,7 @@ onBeforeUnmount(() => {
                 <GlEmptyState v-else-if="!model?.commitDiff.files.length" title="変更ファイルはありません" icon="file" compact />
                 <div v-else class="commit-files">
                   <button
-                    v-for="file in model?.commitDiff.files ?? []"
+                    v-for="file in visibleCommitFiles"
                     :key="file.path"
                     type="button"
                     :disabled="file.collapsed || file.tooLarge"
@@ -545,6 +600,11 @@ onBeforeUnmount(() => {
                     <span class="gl-truncate">{{ file.renamedFile && file.oldPath !== file.newPath ? `${file.oldPath} → ${file.newPath}` : file.path }}</span>
                     <small v-if="file.collapsed || file.tooLarge">{{ file.tooLarge ? "too large" : "collapsed" }}</small>
                   </button>
+                  <GlButton
+                    v-if="visibleCommitFiles.length < (model?.commitDiff.files.length ?? 0)"
+                    size="small"
+                    @click="commitFileLimit += 200"
+                  >Show 200 more</GlButton>
                 </div>
               </div>
             </article>
@@ -563,6 +623,18 @@ onBeforeUnmount(() => {
           </select>
         </template>
 
+        <GlCommentForm
+          v-model="overviewThreadDraft"
+          class="new-thread-form"
+          aria-label="Add review thread"
+          placeholder="Add a review comment…"
+          submit-label="Add review"
+          compact
+          :project-id="commentProjectId"
+          @update:model-value="persist"
+          @submit="addOverviewThread"
+        />
+
         <div class="thread-list">
           <article
             v-for="thread in overview.threads"
@@ -580,9 +652,10 @@ onBeforeUnmount(() => {
                 @click="toggleThread(thread)"
               >
                 <GlIcon name="chevron-right" :size="12" />
+                <GlStatusBadge :status="thread.resolved ? 'resolved' : 'open'">{{ thread.resolved ? "Resolved" : "Open" }}</GlStatusBadge>
                 <GlAvatarGroup
-                  v-if="reviewThreadAuthors(thread).length"
-                  :items="reviewThreadAuthors(thread)"
+                  v-if="thread.authors.length"
+                  :items="thread.authors"
                   aria-label="Reply authors"
                 />
                 <GlAvatar v-else name="GitLab user" />
@@ -593,7 +666,7 @@ onBeforeUnmount(() => {
                   </span>
                   <template v-else>
                     <strong class="thread-expanded-title gl-truncate">{{ thread.filePath ? `${thread.filePath}${thread.line ? `:${thread.line}` : ""}` : "MR overview" }}</strong>
-                    <span class="thread-last-reply">{{ thread.comments.length }} comments</span>
+                    <span class="thread-last-reply">{{ thread.commentCount }} comments</span>
                   </template>
                   <span v-if="isThreadCollapsed(thread)" class="thread-location gl-truncate">{{ thread.filePath ? `${thread.filePath}${thread.line ? `:${thread.line}` : ""}` : "MR overview" }}</span>
                 </span>
@@ -604,21 +677,16 @@ onBeforeUnmount(() => {
                   class="view-diff-action"
                   variant="link"
                   icon="external-link"
-                  :aria-label="`View diff for ${thread.filePath}${thread.line ? ` at line ${thread.line}` : ''}`"
+                  :aria-label="`Go to diff for ${thread.filePath}${thread.line ? ` at line ${thread.line}` : ''}`"
                   size="small"
                   @click.stop="openThread(thread)"
-                >View diff</GlButton>
-                <GlThreadStatusAction
-                  :resolved="thread.resolved"
-                  :pending="thread.pending"
-                  :resolvable="thread.resolvable !== false"
-                  @toggle="post({ type: 'toggleResolved', threadId: thread.id })"
-                />
+                >Go to diff</GlButton>
               </span>
             </header>
 
-            <div v-show="!isThreadCollapsed(thread)" :id="threadPanelId(thread)" class="thread-content">
-              <template v-for="comment in thread.comments" :key="comment.id">
+            <div v-if="!isThreadCollapsed(thread)" :id="threadPanelId(thread)" class="thread-content">
+              <p v-if="!threadDetailsById.get(thread.id)" class="thread-detail-loading"><GlIcon name="spinner" class="spin" :size="12" /> Loading discussion…</p>
+              <template v-for="comment in threadDetailsById.get(thread.id)?.comments ?? []" :key="comment.id">
                 <GlComment
                   v-if="!isEditing(thread.id, comment.id)"
                   :author="comment.author"
@@ -648,15 +716,23 @@ onBeforeUnmount(() => {
               </template>
               <GlCommentForm
                 v-if="!thread.pending"
-                v-model="replyDrafts[thread.id]"
+                :model-value="replyDrafts[thread.id] ?? ''"
                 aria-label="Reply to thread"
                 placeholder="Reply…"
                 submit-label="Reply"
                 compact
                 :project-id="commentProjectId"
-                @update:model-value="persist"
+                @update:model-value="value => { replyDrafts[thread.id] = value; persist(); }"
                 @submit="sendReply(thread.id)"
               />
+              <footer v-if="thread.resolvable !== false" class="thread-lifecycle-actions">
+                <GlButton
+                  size="small"
+                  :icon="thread.resolved ? 'retry' : 'check-circle'"
+                  :loading="thread.pending"
+                  @click="post({ type: 'toggleResolved', threadId: thread.id })"
+                >{{ thread.pending ? "Updating…" : thread.resolved ? "Reopen thread" : "Resolve thread" }}</GlButton>
+              </footer>
             </div>
           </article>
         </div>
@@ -778,6 +854,31 @@ onBeforeUnmount(() => {
 .changed-section .collapsible-section-title > .gl-icon { color: var(--gl-changed-accent); }
 .changed-scroll { min-width: 0; min-height: 0; padding: var(--gl-spacing-4) 0 var(--gl-spacing-4) var(--gl-spacing-4); overflow: visible; }
 .changed-scroll.scrollable { max-height: var(--changed-height); overflow-x: hidden; overflow-y: auto; }
+.changed-flat-list { display: grid; align-content: start; gap: 1px; padding-inline: var(--gl-spacing-4); }
+.changed-flat-file {
+  width: 100%;
+  min-width: 0;
+  min-height: 25px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--gl-spacing-4);
+  padding: 2px var(--gl-spacing-4);
+  border: 0;
+  border-radius: var(--gl-radius-sm);
+  color: var(--gl-text-default);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.changed-flat-file:hover { background: var(--gl-hover-surface); }
+.changed-flat-file.active-file { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.changed-flat-path { font: 11px var(--vscode-editor-font-family); }
+.file-stats { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 10px; white-space: nowrap; }
+.discussion-count { display: inline-flex; align-items: center; gap: 2px; color: var(--gl-thread-accent); }
+.local-edit-mark { color: var(--gl-local-accent); }
+.changed-load-more { justify-self: center; margin-block: var(--gl-spacing-4); }
 .diff-stats { display: flex; gap: var(--gl-spacing-8); font-size: 10px; }
 .resizer { height: 5px; margin-top: calc(var(--gl-spacing-12) * -1); cursor: row-resize; }
 .resizer::before { content: ""; display: block; width: 32px; height: 2px; margin: 3px auto; border-radius: var(--gl-radius-pill); background: var(--gl-border-strong); }
@@ -803,6 +904,7 @@ onBeforeUnmount(() => {
 .open-count { color: var(--gl-text-subtle); font-size: 10px; }
 select { min-height: 24px; border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); color: var(--vscode-dropdown-foreground, var(--gl-text-default)); background: var(--vscode-dropdown-background, var(--gl-surface-raised)); }
 .thread-list { min-width: 0; display: grid; gap: var(--gl-spacing-8); }
+.new-thread-form { margin-bottom: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); }
 .commit-section .collapsible-section-title > .gl-icon { color: var(--gl-commit-accent); }
 .thread-section :deep(.gl-section-title > .gl-icon) { color: var(--gl-thread-accent); }
 .thread {
@@ -864,6 +966,7 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .comment-edit-action:hover:not(:disabled) { color: var(--gl-thread-accent); }
 .thread-actions { display: inline-flex; align-items: center; gap: var(--gl-spacing-2); white-space: nowrap; }
 .thread-content { min-width: 0; }
+.thread-lifecycle-actions { display: flex; justify-content: flex-end; padding: var(--gl-spacing-8); border-top: 1px solid var(--gl-border-subtle); background: var(--gl-surface-subtle); }
 
 @media (max-width: 480px) {
   .thread-header { gap: var(--gl-spacing-2); padding-inline: var(--gl-spacing-2); }

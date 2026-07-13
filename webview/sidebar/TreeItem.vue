@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import type { BranchTreeNode } from "../../src/branchTreeUtils";
 import type { ChangedFileTreeNode } from "../../src/reviewTreeUtils";
 import GlIcon from "../common/components/GlIcon.vue";
@@ -14,6 +15,7 @@ const emit = defineEmits<{
   openChanged: [path: string];
   openBranch: [branch: string, path: string];
 }>();
+const expanded = ref(false);
 
 function isTree(): boolean { return props.node.type === "tree"; }
 function open(): void {
@@ -22,17 +24,20 @@ function open(): void {
   else if (props.branch) emit("openBranch", props.branch, props.node.path);
 }
 function forwardBranch(branch: string, path: string): void { emit("openBranch", branch, path); }
+function syncExpanded(event: Event): void {
+  expanded.value = (event.currentTarget as HTMLDetailsElement).open;
+}
 </script>
 
 <template>
-  <details v-if="isTree()" class="tree-directory" open>
+  <details v-if="isTree()" class="tree-directory" :open="expanded" @toggle="syncExpanded">
     <summary :title="node.path">
       <GlIcon class="directory-chevron" name="chevron-right" :size="12" />
       <GlIcon class="directory-icon" name="folder" :size="14" />
       <span class="tree-name">{{ node.name }}</span>
       <span class="directory-count">{{ node.children.length }}</span>
     </summary>
-    <div class="tree-children">
+    <div v-if="expanded" class="tree-children">
       <TreeItem
         v-for="child in node.children"
         :key="child.path"

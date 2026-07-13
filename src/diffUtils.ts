@@ -1,4 +1,5 @@
 import { diffArrays } from "diff";
+import { parseCommitDiff } from "./commitDiffUtils";
 import {
   DiffCount,
   ReviewLine,
@@ -52,6 +53,53 @@ export function countLineDiff(oldText: string, newText: string): DiffCount {
     }),
     { additions: 0, deletions: 0 }
   );
+}
+
+export function countPatchDiff(patch: string | undefined): DiffCount {
+  let additions = 0;
+  let deletions = 0;
+  let inHunk = false;
+  for (const line of (patch ?? "").replace(/\r\n/g, "\n").split("\n")) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || line.startsWith("\\ No newline at end of file")) continue;
+    if (line.startsWith("+")) additions += 1;
+    else if (line.startsWith("-")) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+export function buildReviewLinesFromPatch(
+  patch: string | undefined,
+  threads: readonly ReviewThread[]
+): ReviewLine[] {
+  const byNewLine = groupThreadsByNewLine(threads);
+  const byOldLine = groupThreadsByOldLine(threads);
+  return parseCommitDiff(patch ?? "").map((line, index) => {
+    const kind: ReviewLine["kind"] = line.kind === "added"
+      ? "mr-added"
+      : line.kind === "deleted"
+        ? "mr-removed"
+        : "context";
+    const lineThreads = line.kind === "deleted"
+      ? byOldLine.get(line.oldLine ?? -1) ?? []
+      : byNewLine.get(line.newLine ?? -1) ?? [];
+    const text = line.kind === "added" || line.kind === "deleted" || line.kind === "context"
+      ? line.text.slice(1)
+      : line.text;
+    return {
+      id: `patch-${index}-${line.oldLine ?? ""}-${line.newLine ?? ""}`,
+      kind,
+      text,
+      oldLine: line.oldLine,
+      mrLine: line.newLine,
+      localLine: line.newLine,
+      mrAdded: line.kind === "added",
+      threadIds: lineThreads.map((thread) => thread.id)
+    };
+  });
 }
 
 export function buildSideBySideRows<T extends { kind: string }>(
@@ -143,7 +191,7 @@ function buildMrReviewLines(
           mrLine,
           localLine: mrLine,
           mrAdded: true,
-          threads: threadMap.get(mrLine) ?? []
+          threadIds: (threadMap.get(mrLine) ?? []).map((thread) => thread.id)
         });
         mrLine += 1;
       }
@@ -157,7 +205,7 @@ function buildMrReviewLines(
           kind: "mr-removed",
           text,
           oldLine,
-          threads: oldThreadMap.get(oldLine) ?? []
+          threadIds: (oldThreadMap.get(oldLine) ?? []).map((thread) => thread.id)
         });
         oldLine += 1;
       }
@@ -172,7 +220,7 @@ function buildMrReviewLines(
         oldLine,
         mrLine,
         localLine: mrLine,
-        threads: threadMap.get(mrLine) ?? []
+        threadIds: (threadMap.get(mrLine) ?? []).map((thread) => thread.id)
       });
       oldLine += 1;
       mrLine += 1;
@@ -211,7 +259,7 @@ function buildReviewLinesWithLocalEdits(
         kind: "mr-removed",
         text: removed.text,
         oldLine: removed.oldLine,
-        threads: oldThreadMap.get(removed.oldLine) ?? []
+        threadIds: (oldThreadMap.get(removed.oldLine) ?? []).map((thread) => thread.id)
       });
     }
   };
@@ -224,7 +272,7 @@ function buildReviewLinesWithLocalEdits(
           kind: "local-added",
           text,
           localLine,
-          threads: []
+          threadIds: []
         });
         localLine += 1;
       }
@@ -241,7 +289,7 @@ function buildReviewLinesWithLocalEdits(
           oldLine: mrMarkers.oldLineByMrLine.get(mrLine),
           mrLine,
           mrAdded: mrMarkers.addedLines.has(mrLine),
-          threads: threadMap.get(mrLine) ?? []
+          threadIds: (threadMap.get(mrLine) ?? []).map((thread) => thread.id)
         });
         mrLine += 1;
       }
@@ -259,7 +307,7 @@ function buildReviewLinesWithLocalEdits(
         mrLine,
         localLine,
         mrAdded: wasAddedInMr,
-        threads: threadMap.get(mrLine) ?? []
+        threadIds: (threadMap.get(mrLine) ?? []).map((thread) => thread.id)
       });
       mrLine += 1;
       localLine += 1;
@@ -313,7 +361,7 @@ function buildMrMarkers(oldText: string, mrText: string): MrMarkers {
   return { addedLines, oldLineByMrLine, removedBeforeMrLine };
 }
 
-function groupThreadsByNewLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
+function groupThreadsByNewLine(threads: readonly ReviewThread[]): Map<number, ReviewThread[]> {
   const map = new Map<number, ReviewThread[]>();
   for (const thread of threads) {
     const line = thread.newLine ?? thread.line;
@@ -328,7 +376,7 @@ function groupThreadsByNewLine(threads: ReviewThread[]): Map<number, ReviewThrea
   return map;
 }
 
-function groupThreadsByOldLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
+function groupThreadsByOldLine(threads: readonly ReviewThread[]): Map<number, ReviewThread[]> {
   const map = new Map<number, ReviewThread[]>();
   for (const thread of threads) {
     if (typeof thread.oldLine !== "number") {

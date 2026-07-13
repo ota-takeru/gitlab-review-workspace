@@ -33,6 +33,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private localScopeKey = "";
   private activeTab: "review" | "my-work" = "review";
   private myWorkPollingTimer?: ReturnType<typeof setInterval>;
+  private updateScheduled = false;
+  private readonly expandedThreadIds = new Set<string>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -45,18 +47,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   ) {
     this.context.subscriptions.push(
       this.store.onDidChange(() => {
+        const overview = this.store.getOverview();
         if (this.store.getIsRefreshing() && this.branchTree.phase !== "hidden") {
           this.branchTreeRequestId += 1;
           this.branchTree = { phase: "hidden", entries: [] };
         }
-        if (!isCommitDiffValid(this.commitDiff, this.store.getOverview())) {
+        if (!isCommitDiffValid(this.commitDiff, overview)) {
           this.commitDiffRequestId += 1;
           this.commitDiff = { phase: "hidden", files: [] };
         }
-        const overview = this.store.getOverview();
         const nextLocalScopeKey = `${overview.selectedMergeRequest?.projectId ?? ""}!${overview.selectedMergeRequest?.iid ?? ""}:${overview.sourceBranch}`;
         if (nextLocalScopeKey !== this.localScopeKey) {
           this.localScopeKey = nextLocalScopeKey;
+          this.expandedThreadIds.clear();
           void this.refreshLocalWorkspace();
         }
         this.pushUpdate();
@@ -84,6 +87,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     webviewView.onDidChangeVisibility(() => {
       this.updateMyWorkPolling();
       if (webviewView.visible && this.activeTab === "my-work") void this.myWork.refresh();
+      if (webviewView.visible) this.pushUpdate();
     });
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
@@ -102,17 +106,34 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   private pushUpdate(): void {
-    if (!this.view) return;
+    if (!this.view?.visible || this.updateScheduled) return;
+    this.updateScheduled = true;
+    queueMicrotask(() => {
+      this.updateScheduled = false;
+      this.deliverUpdate();
+    });
+  }
+
+  private deliverUpdate(): void {
+    if (!this.view?.visible) return;
     const auth = this.glabAuth.getState();
+    const overview = this.store.getOverview();
+    const detailIds = new Set(this.expandedThreadIds);
+    if (overview.threads.length <= 20) {
+      for (const thread of overview.threads) {
+        if (!thread.resolved) detailIds.add(thread.id);
+      }
+    }
     const state = createSidebarViewState(
-      this.store.getOverview(),
+      overview,
       { phase: auth.phase, hostname: auth.hostname, reason: auth.reason },
       this.branchTree,
       this.commitDiff,
       this.navigator.getActiveFilePath(),
-      this.localGit.getState(this.store.getOverview().sourceBranch, this.store.getOverview().selectedMergeRequest?.projectId),
+      this.localGit.getState(overview.sourceBranch, overview.selectedMergeRequest?.projectId),
       this.activeTab,
-      this.myWork.getState()
+      this.myWork.getState(),
+      this.store.getThreadDetails([...detailIds])
     );
     void this.view.webview.postMessage({ type: "state", state } satisfies HostMessage<SidebarViewState>);
   }
@@ -130,8 +151,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       case "openBranchFile": await this.navigator.openBranchFile(message.branch, message.filePath); return;
       case "openCommitFile": await this.navigator.openCommitDiffFile(message.commitId, message.filePath); return;
       case "addComment": await this.store.addComment(message.threadId, message.body); return;
+      case "addOverviewThread": await this.store.addOverviewThread(message.body); return;
       case "editComment": await this.store.editComment(message.threadId, message.commentId, message.body); return;
       case "toggleResolved": await this.store.toggleResolved(message.threadId); return;
+      case "setThreadExpanded":
+        if (message.expanded) this.expandedThreadIds.add(message.threadId);
+        else this.expandedThreadIds.delete(message.threadId);
+        this.pushUpdate();
+        return;
       case "login": await this.glabAuth.startLogin(); return;
       case "refreshAuth": await this.glabAuth.refreshStatus(); return;
       case "refreshReview": await this.store.refresh(); return;
@@ -371,7 +398,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     try {
       const files = await this.store.loadCommitDiff(commitId);
       if (requestId !== this.commitDiffRequestId || overviewMergeRequestKey(this.store.getOverview()) !== mrKey) return;
-      this.commitDiff = { phase: "ready", mrKey, commitId, files };
+      this.commitDiff = {
+        phase: "ready",
+        mrKey,
+        commitId,
+        files: files.map(({ diff: _diff, ...file }) => file)
+      };
     } catch {
       if (requestId !== this.commitDiffRequestId || overviewMergeRequestKey(this.store.getOverview()) !== mrKey) return;
       this.commitDiff = { phase: "error", mrKey, commitId, files: [], errorMessage: "コミット差分を取得できませんでした。" };
