@@ -37,6 +37,11 @@
 - For UI changes, verify both light and dark themes plus narrow Sidebar and editor-panel widths using the checklist in `docs/UI_DESIGN.md`.
 - Report commands run, results, files changed, and any validation that could not be completed.
 
+## Release packaging
+
+- For VSIX releases, run `npx --yes @vscode/vsce package` without `--no-dependencies` so runtime dependencies are included.
+- Before uploading a release asset, verify `vsce ls --tree` contains all runtime dependencies declared in `package.json` (including `node_modules/diff` when required) and compiled worker files such as `out/reviewDiffWorker.js`.
+
 ## Storybook workflow
 
 - For Webview UI changes, use the nearest story under `webview/**/*.stories.ts`; add a state when the bug cannot already be reproduced directly by URL.
