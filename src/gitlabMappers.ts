@@ -4,8 +4,10 @@ import {
   ReviewComment,
   ReviewCommit,
   ReviewNotification,
+  ReviewFile,
   ReviewThread
 } from "./reviewTypes";
+import { countPatchDiff } from "./diffUtils";
 import type { MyWorkSource, MyWorkSourceItem } from "./myWorkTypes";
 import type { ReviewUser } from "./reviewTypes";
 
@@ -38,6 +40,35 @@ export interface GitLabCommitDiff {
   renamed_file?: boolean;
   collapsed?: boolean;
   too_large?: boolean;
+  generated_file?: boolean;
+}
+
+export function mapGitLabReviewDiffs(diffs: readonly GitLabCommitDiff[]): ReviewFile[] {
+  return diffs.map((diff) => {
+    const oldPath = nonEmpty(diff.old_path) ?? nonEmpty(diff.new_path) ?? "(unknown path)";
+    const newPath = nonEmpty(diff.new_path) ?? oldPath;
+    const newFile = diff.new_file === true;
+    const deletedFile = diff.deleted_file === true;
+    const renamedFile = diff.renamed_file === true;
+    const patch = diff.diff ?? "";
+    const counts = countPatchDiff(patch);
+    const path = deletedFile ? oldPath : newPath;
+    return {
+      path,
+      language: inferLanguage(path),
+      oldPath,
+      newPath,
+      patch,
+      status: newFile ? "new" : deletedFile ? "deleted" : renamedFile ? "renamed" : "modified",
+      newFile,
+      deletedFile,
+      renamedFile,
+      collapsed: diff.collapsed === true,
+      tooLarge: diff.too_large === true,
+      generatedFile: diff.generated_file === true,
+      ...counts
+    };
+  });
 }
 
 export interface GitLabDiscussion {

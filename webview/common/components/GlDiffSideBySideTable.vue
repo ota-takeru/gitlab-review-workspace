@@ -148,8 +148,8 @@ function codeFor(line?: GlDiffSideLine): string {
   margin: 0;
   padding: 3px var(--gl-spacing-8);
   overflow: visible;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  overflow-wrap: normal;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -166,5 +166,5 @@ function codeFor(line?: GlDiffSideLine): string {
   font: var(--vscode-editor-font-size)/1.35 var(--vscode-editor-font-family);
 }
 
-.gl-diff-side-by-side-full code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.gl-diff-side-by-side-full code { white-space: pre; overflow-wrap: normal; }
 </style>

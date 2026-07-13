@@ -15,6 +15,7 @@ import {
   mapGitLabTodos,
   mapGitLabMyWorkMergeRequests,
   mapGitLabMyWorkTodos,
+  mapGitLabReviewDiffs,
   mapGitLabReviewers
 } from "./gitlabMappers";
 import type { MyWorkSource, MyWorkSourceItem } from "./myWorkTypes";
@@ -28,6 +29,7 @@ import {
   ReviewComment,
   ReviewCommit,
   ReviewFile,
+  ReviewFileContents,
   ReviewNotification,
   ReviewState,
   ReviewThread
@@ -74,19 +76,43 @@ export interface GitLabBranch {
   commit?: { committed_date?: string; created_at?: string };
 }
 
-interface GitLabDiff {
-  old_path: string;
-  new_path: string;
-  new_file: boolean;
-  deleted_file: boolean;
-  too_large?: boolean;
-}
-
 interface GitLabRepositoryTreeEntry {
   name: string;
   path: string;
   type: "tree" | "blob";
 }
+
+export type GitLabFileContentErrorCode = "too-large" | "binary" | "unavailable";
+
+export class GitLabFileContentError extends Error {
+  constructor(readonly code: GitLabFileContentErrorCode, message: string) {
+    super(message);
+    this.name = "GitLabFileContentError";
+  }
+}
+
+class AsyncLimiter {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    }
+    this.active += 1;
+    try {
+      return await operation();
+    } finally {
+      this.active -= 1;
+      this.waiting.shift()?.();
+    }
+  }
+}
+
+const rawFileLimiter = new AsyncLimiter(4);
+const maxReviewFileBytes = 8 * 1024 * 1024;
 
 interface GitLabUser {
   id: number | string;
@@ -157,14 +183,14 @@ export class GitLabReviewClient {
     const commits = await this.getPaginatedJson<GitLabCommit[]>(
       `projects/${projectSegment(projectId)}/merge_requests/${iid}/commits?per_page=100`
     );
-    return mapGitLabCommits(commits.slice(0, 100));
+    return mapGitLabCommits(commits);
   }
 
   async loadCommitDiff(projectId: string, commitId: string): Promise<CommitDiffFile[]> {
     const diffs = await this.getPaginatedJson<GitLabCommitDiff[]>(
       `projects/${projectSegment(projectId)}/repository/commits/${encodeURIComponent(commitId)}/diff?per_page=100`
     );
-    return mapGitLabCommitDiffs(diffs.slice(0, 100));
+    return mapGitLabCommitDiffs(diffs);
   }
 
   async loadCommitFileContents(
@@ -225,7 +251,7 @@ export class GitLabReviewClient {
     );
     const projectId = String(mergeRequest.project_id);
     const [diffs, discussions, currentUser, commits] = await Promise.all([
-      this.getJson<GitLabDiff[]>(
+      this.getPaginatedJson<GitLabCommitDiff[]>(
         `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/diffs?per_page=100`
       ),
       this.getPaginatedJson<GitLabDiscussion[]>(
@@ -241,9 +267,7 @@ export class GitLabReviewClient {
       throw new Error("The merge request does not have diff references yet.");
     }
 
-    const files = await Promise.all(
-      diffs.map((diff) => this.loadFile(projectId, diff, baseSha, headSha))
-    );
+    const files = mapGitLabReviewDiffs(diffs);
 
     return {
       id: `${projectId}!${mergeRequest.iid}`,
@@ -261,6 +285,21 @@ export class GitLabReviewClient {
       files,
       threads: mapGitLabDiscussions(discussions, currentUser?.id)
     };
+  }
+
+  async loadMergeRequestFileContents(review: ReviewState, file: ReviewFile): Promise<ReviewFileContents> {
+    const diffRefs = review.diffRefs;
+    if (!diffRefs) {
+      throw new GitLabFileContentError("unavailable", "The merge request diff references are unavailable.");
+    }
+    if (file.tooLarge) {
+      throw new GitLabFileContentError("too-large", "GitLab marked this file as too large to display.");
+    }
+    const [oldText, mrText] = await Promise.all([
+      file.newFile ? Promise.resolve("") : this.getRawFile(review.projectId, file.oldPath, diffRefs.baseSha),
+      file.deletedFile ? Promise.resolve("") : this.getRawFile(review.projectId, file.newPath, diffRefs.headSha)
+    ]);
+    return { oldText, mrText };
   }
 
   async addReply(
@@ -376,37 +415,45 @@ export class GitLabReviewClient {
     return toReviewThread(discussion, true);
   }
 
-  private async loadFile(
-    projectId: string,
-    diff: GitLabDiff,
-    baseSha: string,
-    headSha: string
-  ): Promise<ReviewFile> {
-    const oldText = diff.new_file ? "" : await this.getRawFile(projectId, diff.old_path, baseSha);
-    const mrText = diff.deleted_file
-      ? ""
-      : await this.getRawFile(projectId, diff.new_path, headSha);
-    const path = diff.deleted_file ? diff.old_path : diff.new_path;
+  async createOverviewThread(review: ReviewState, body: string): Promise<ReviewThread> {
+    const discussion = await this.requestJson<GitLabDiscussion>(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "POST",
+        `projects/${projectSegment(review.projectId)}/merge_requests/${review.mergeRequestIid}/discussions`,
+        "--raw-field",
+        `body=${body}`
+      ],
+      "Could not create the GitLab discussion."
+    );
 
-    return {
-      path,
-      language: inferLanguage(path),
-      oldText,
-      mrText,
-      oldPath: diff.old_path,
-      newPath: diff.new_path
-    };
+    return toReviewThread(discussion, true);
   }
 
   private async getRawFile(projectId: string, filePath: string, ref: string): Promise<string> {
-    const result = await runGlab([
-      "api",
-      "--hostname",
-      this.hostname,
-      `projects/${projectSegment(projectId)}/repository/files/${encodeURIComponent(filePath)}/raw?ref=${encodeURIComponent(ref)}`
-    ]);
-
-    return result.ok ? result.stdout : "";
+    return rawFileLimiter.run(async () => {
+      const result = await runGlab([
+        "api",
+        "--hostname",
+        this.hostname,
+        `projects/${projectSegment(projectId)}/repository/files/${encodeURIComponent(filePath)}/raw?ref=${encodeURIComponent(ref)}`
+      ], 30_000, maxReviewFileBytes);
+      if (!result.ok) {
+        throw new GitLabFileContentError(
+          result.reason === "too-large" ? "too-large" : "unavailable",
+          result.reason === "too-large"
+            ? `The file exceeds the ${Math.round(maxReviewFileBytes / 1024 / 1024)} MiB review limit.`
+            : "Could not read the GitLab file."
+        );
+      }
+      if (result.stdout.includes("\0")) {
+        throw new GitLabFileContentError("binary", "Binary files cannot be displayed as text.");
+      }
+      return result.stdout;
+    });
   }
 
   private async getJson<T>(endpoint: string): Promise<T> {

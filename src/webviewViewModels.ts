@@ -1,4 +1,4 @@
-import type { ReviewOverview } from "./reviewTypes";
+import type { ReviewOverview, ReviewThread } from "./reviewTypes";
 import type {
   BranchTreeState,
   CommitDiffState,
@@ -26,10 +26,12 @@ export function createSidebarViewState(
   activeFilePath?: string,
   localWorkspace?: LocalWorkspaceState,
   activeTab: "review" | "my-work" = "review",
-  myWork?: MyWorkState
+  myWork?: MyWorkState,
+  threadDetails: ReviewThread[] = []
 ): SidebarViewState {
   return {
     overview,
+    threadDetails,
     auth,
     branchTree,
     commitDiff,

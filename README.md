@@ -42,7 +42,7 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 コマンドラインからインストールする場合は次を実行します。
 
 ```bash
-code --install-extension gitlab-review-workspace-0.0.1.vsix
+code --install-extension gitlab-review-workspace-0.0.7.vsix
 ```
 
 インストール後、`glab auth login`を実行してからActivity Barの`GitLab Review`を開いてください。

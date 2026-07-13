@@ -60,13 +60,16 @@ let dragStart = -1;
 let dragEnd = -1;
 let dragging = false;
 let readyRetry: number | undefined;
+let draftPersistTimer: number | undefined;
+const maxPersistedEditDraftCharacters = 512_000;
 
 const model = computed(() => state.value?.viewModel);
 const lines = computed(() => model.value?.lines ?? []);
+const threadsById = computed(() => new Map((model.value?.threads ?? []).map((thread) => [thread.id, thread])));
 const displayedLines = computed(() => {
   if (diffScope.value === "file") return lines.value;
   const changed = lines.value
-    .map((line, index) => line.kind !== "context" || line.threads.length > 0 ? index : -1)
+    .map((line, index) => line.kind !== "context" || line.threadIds.length > 0 ? index : -1)
     .filter((index) => index >= 0);
   if (changed.length === 0) return lines.value;
   const visible = new Set<number>();
@@ -127,7 +130,11 @@ function reviewLinesInRow(row: ReviewSideBySideRow): ReviewLine[] {
 }
 
 function threadsInSide(side?: GlDiffSideLine): ReviewThread[] {
-  return reviewLineFromSide(side)?.threads ?? [];
+  return (reviewLineFromSide(side)?.threadIds ?? [])
+    .flatMap((id) => {
+      const thread = threadsById.value.get(id);
+      return thread ? [thread] : [];
+    });
 }
 
 function threadsInRow(row: ReviewSideBySideRow): ReviewThread[] {
@@ -182,6 +189,9 @@ function post(message: ReviewFileMessage): void {
 function setDiffScope(next: GlDiffScope): void {
   diffScope.value = next;
   persist();
+  if (next === "file" && model.value?.fullFileState !== "loaded" && model.value?.fullFileState !== "loading") {
+    post({ type: "loadFullFile" });
+  }
 }
 
 function persist(): void {
@@ -191,11 +201,33 @@ function persist(): void {
     replyDrafts: replyDrafts.value,
     selectedRange: selectedRange.value,
     rangeComposer: rangeComposer.value,
-    localEditDraft: localEditText.value,
+    localEditDraft: (localEditText.value?.length ?? 0) <= maxPersistedEditDraftCharacters
+      ? localEditText.value
+      : undefined,
     collapsedThreads: collapsedThreads.value,
     diffScope: diffScope.value
   };
   vscode.setState(persisted as Record<string, unknown>);
+}
+
+function persistEditDraft(): void {
+  if (draftPersistTimer !== undefined) window.clearTimeout(draftPersistTimer);
+  draftPersistTimer = window.setTimeout(() => {
+    draftPersistTimer = undefined;
+    persist();
+  }, 400);
+}
+
+function loadPreviousWindow(): void {
+  const windowState = model.value?.lineWindow;
+  if (!windowState?.hasPrevious) return;
+  post({ type: "loadLineWindow", start: Math.max(0, windowState.start - Math.max(1, windowState.end - windowState.start)) });
+}
+
+function loadNextWindow(): void {
+  const windowState = model.value?.lineWindow;
+  if (!windowState?.hasNext) return;
+  post({ type: "loadLineWindow", start: windowState.end });
 }
 
 function applyState(next: ReviewFileViewState): void {
@@ -524,6 +556,10 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (draftPersistTimer !== undefined) {
+    window.clearTimeout(draftPersistTimer);
+    persist();
+  }
   stopReadyRetry();
   window.removeEventListener("message", onMessage);
   window.removeEventListener("pointerup", finishDrag);
@@ -573,7 +609,7 @@ onBeforeUnmount(() => {
           class="edit-area"
           aria-label="File contents"
           spellcheck="false"
-          @input="persist"
+          @input="persistEditDraft"
           @keydown="onEditorKeydown"
         />
       </div>
@@ -658,6 +694,19 @@ onBeforeUnmount(() => {
       <span class="legend-item mr-del"><span class="legend-swatch" />MR deletion</span>
       <span class="legend-item local-add"><span class="legend-swatch" />Local addition</span>
       <span class="legend-item local-del"><span class="legend-swatch" />Local deletion</span>
+    </div>
+
+    <div v-if="model.fullFileState !== 'loaded'" class="full-file-state" role="status">
+      <span v-if="model.fullFileState === 'loading'"><GlIcon name="spinner" class="spin" :size="13" /> Loading full file…</span>
+      <span v-else-if="model.fullFileState === 'too-large' || model.fullFileState === 'binary' || model.fullFileState === 'error'">
+        <GlIcon name="warning" :size="13" />{{ model.fullFileMessage || 'The full file cannot be displayed.' }}
+      </span>
+      <span v-else>Showing GitLab patch only.</span>
+      <GlButton
+        v-if="model.fullFileState === 'not-loaded' || model.fullFileState === 'error'"
+        size="small"
+        @click="post({ type: 'loadFullFile' })"
+      >Load full file</GlButton>
     </div>
 
     <GlDiffSideBySideTable
@@ -775,7 +824,7 @@ onBeforeUnmount(() => {
             />
           </header>
 
-          <div v-show="!isThreadCollapsed(thread)" :id="threadPanelId(thread)" class="discussion-content">
+          <div v-if="!isThreadCollapsed(thread)" :id="threadPanelId(thread)" class="discussion-content">
             <GlComment
               v-for="comment in thread.comments"
               :key="comment.id"
@@ -833,6 +882,16 @@ onBeforeUnmount(() => {
         </article>
       </template>
     </GlDiffSideBySideTable>
+
+    <nav
+      v-if="model.lineWindow.hasPrevious || model.lineWindow.hasNext"
+      class="line-window-nav"
+      aria-label="Large diff pages"
+    >
+      <GlButton size="small" :disabled="!model.lineWindow.hasPrevious" @click="loadPreviousWindow">Previous lines</GlButton>
+      <span>{{ model.lineWindow.start + 1 }}–{{ model.lineWindow.end }} / {{ model.lineWindow.total }}</span>
+      <GlButton size="small" :disabled="!model.lineWindow.hasNext" @click="loadNextWindow">Next lines</GlButton>
+    </nav>
   </main>
 </template>
 
@@ -876,6 +935,21 @@ onBeforeUnmount(() => {
   background: var(--vscode-editor-background);
   font-size: 11px;
 }
+.full-file-state,
+.line-window-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gl-spacing-8);
+  min-height: 34px;
+  padding: var(--gl-spacing-4) var(--gl-spacing-8);
+  border-bottom: 1px solid var(--gl-border-subtle);
+  color: var(--gl-text-subtle);
+  background: var(--gl-surface-subtle);
+  font-size: 11px;
+}
+.full-file-state > span { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); }
+.line-window-nav { border-top: 1px solid var(--gl-border-subtle); }
 
 .context-copy { margin-right: auto; }
 .scope-label { color: var(--gl-text-subtle); white-space: nowrap; }
@@ -889,6 +963,8 @@ onBeforeUnmount(() => {
 .code-table { width: 100%; overflow: auto; }
 .split-code-row {
   display: grid;
+  content-visibility: auto;
+  contain-intrinsic-block-size: 22px;
   grid-template-columns: repeat(2, minmax(320px, 1fr));
   min-width: 640px;
   cursor: crosshair;
@@ -942,8 +1018,8 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 3px 46px 3px var(--gl-spacing-8);
   overflow: visible;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  overflow-wrap: normal;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -959,7 +1035,7 @@ onBeforeUnmount(() => {
   font: var(--vscode-editor-font-size)/1.35 var(--vscode-editor-font-family);
 }
 
-.split-code-full code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.split-code-full code { white-space: pre; overflow-wrap: normal; }
 
 .line-discussions {
   position: absolute;

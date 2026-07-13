@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 import type { FileSummary } from "../../src/reviewTypes";
 import { buildChangedFileTree, compactChangedFileTree } from "../../src/reviewTreeUtils";
 import TreeItem from "./TreeItem.vue";
@@ -32,7 +32,10 @@ export const CompactDirectoryChains: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByText("src"));
     await expect(canvas.getByText("features/review")).toBeVisible();
+    await userEvent.click(canvas.getByText("features/review"));
+    await userEvent.click(canvas.getByText("panel"));
     await expect(canvas.getByText("App.vue")).toBeVisible();
     await expect(canvas.getByText("src")).toBeVisible();
   }

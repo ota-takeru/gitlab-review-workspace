@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
-import { GitLabReviewClient } from "./gitlabApi";
+import { GitLabFileContentError, GitLabReviewClient } from "./gitlabApi";
 import { getGitLabHostname } from "./glabAuthUtils";
 import { inferLanguage } from "./gitlabMappers";
-import { parseCommitDiff } from "./commitDiffUtils";
-import { buildReviewLines, countLineDiff } from "./diffUtils";
+import { buildReviewLines, buildReviewLinesFromPatch, countLineDiff, countPatchDiff } from "./diffUtils";
 import { editedTimestamp } from "./commentUtils";
+import { buildReviewLinesAsync, shouldBuildReviewLinesInWorker } from "./reviewDiffWorkerClient";
 import { ReviewThreadSortOrder, sortReviewThreads } from "./reviewTreeUtils";
 import {
   BranchFileContent,
@@ -16,12 +16,14 @@ import {
   LocalEdit,
   MergeRequestOption,
   ReviewFile,
+  ReviewFileContents,
+  ReviewFileView,
   ReviewLine,
-  ReviewLineKind,
   ReviewLoadState,
   ReviewOverview,
   ReviewState,
   ReviewThread,
+  ReviewThreadSummary,
   RepositoryTreeEntry
 } from "./reviewTypes";
 import type { MergeRequestWorkspaceAssociation } from "./localGitTypes";
@@ -30,6 +32,7 @@ export const REVIEW_CACHE_KEYS = {
   localEdits: "gitlabReview.localEdits.v2",
   selectedMergeRequest: "gitlabReview.selectedMergeRequest",
   reviewState: "gitlabReview.cache.reviewState.v1",
+  lightweightReviewState: "gitlabReview.cache.reviewState.v2",
   branchTrees: "gitlabReview.cache.branchTrees.v1",
   branchFiles: "gitlabReview.cache.branchFiles.v1",
   commitDiffs: "gitlabReview.cache.commitDiffs.v1",
@@ -45,7 +48,12 @@ const cacheLimits = {
   branchFileCharacters: 2_000_000,
   commitDiffs: 12,
   commitDiffCharacters: 2_000_000,
-  reviewStateCharacters: 8_000_000
+  reviewStateCharacters: 8_000_000,
+  reviewFileContentCharacters: 16_000_000,
+  reviewFileContents: 12,
+  reviewLineCharacters: 16_000_000,
+  reviewLineEntries: 12,
+  lineWindow: 1_200
 } as const;
 const cachedReviewRevealDelayMs = 100;
 
@@ -56,6 +64,26 @@ type WorkspaceAssociations = Record<string, MergeRequestWorkspaceAssociation>;
 interface CacheEntry<T> {
   key: string;
   value: T;
+  updatedAt: number;
+}
+
+interface ReviewFileViewOptions {
+  windowStart?: number;
+  targetLine?: number;
+  includeEditableText?: boolean;
+  fullFileStateOverride?: FileReviewViewModel["fullFileState"];
+  fullFileMessage?: string;
+}
+
+interface CachedReviewFileContents {
+  contents: ReviewFileContents;
+  characters: number;
+  updatedAt: number;
+}
+
+interface CachedReviewLines {
+  lines: ReviewLine[];
+  characters: number;
   updatedAt: number;
 }
 
@@ -78,6 +106,18 @@ export class ReviewStore {
   private readonly branchFileCacheTimes = new Map<string, number>();
   private readonly commitDiffCache = new Map<string, CommitDiffFile[]>();
   private readonly commitDiffCacheTimes = new Map<string, number>();
+  private readonly reviewFileContentCache = new Map<string, CachedReviewFileContents>();
+  private readonly reviewFileContentLoads = new Map<string, Promise<ReviewFileContents>>();
+  private readonly reviewFileContentErrors = new Map<string, { state: FileReviewViewModel["fullFileState"]; message: string }>();
+  private readonly reviewLineCache = new Map<string, CachedReviewLines>();
+  private readonly reviewLineLoads = new Map<string, Promise<void>>();
+  private readonly reviewLineFailures = new Set<string>();
+  private reviewFileContentCharacters = 0;
+  private reviewLineCharacters = 0;
+  private overviewRevision = 0;
+  private overviewCache?: { revision: number; value: ReviewOverview };
+  private threadIndex?: Map<string, ReviewThread[]>;
+  private fileIndex?: Map<string, ReviewFile>;
 
   readonly onDidChange = this.onDidChangeEmitter.event;
 
@@ -86,7 +126,10 @@ export class ReviewStore {
     private readonly baseUrlProvider: () => string = () =>
       vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
   ) {
-    const cachedState = this.context.workspaceState.get<ReviewState>(REVIEW_CACHE_KEYS.reviewState);
+    const cachedState = normalizeCachedReviewState(
+      this.context.workspaceState.get<unknown>(REVIEW_CACHE_KEYS.lightweightReviewState)
+      ?? this.context.workspaceState.get<unknown>(REVIEW_CACHE_KEYS.reviewState)
+    );
     this.state = cachedState
       ? {
           ...cachedState,
@@ -139,15 +182,19 @@ export class ReviewStore {
   }
 
   getOverview(): ReviewOverview {
+    if (this.overviewCache?.revision === this.overviewRevision) {
+      return this.overviewCache.value;
+    }
     const files = this.state?.files.map((file) => this.getFileSummary(file)) ?? [];
     const additions = files.reduce((total, file) => total + file.additions, 0);
     const deletions = files.reduce((total, file) => total + file.deletions, 0);
-    const threads = sortReviewThreads(this.state?.threads ?? [], this.threadSortOrder);
-    const resolvableThreads = threads.filter((thread) => thread.resolvable !== false);
+    const sortedThreads = sortReviewThreads(this.state?.threads ?? [], this.threadSortOrder);
+    const resolvableThreads = sortedThreads.filter((thread) => thread.resolvable !== false);
     const resolvedThreads = resolvableThreads.filter((thread) => thread.resolved).length;
     const unresolvedThreads = resolvableThreads.length - resolvedThreads;
+    const threads = sortedThreads.map(toReviewThreadSummary);
 
-    return {
+    const value: ReviewOverview = {
       loadState: this.loadState,
       isRefreshing: this.isRefreshing,
       errorMessage: this.errorMessage,
@@ -161,12 +208,20 @@ export class ReviewStore {
       commits: this.state?.commits ?? [],
       files,
       threads,
-      totalComments: threads.reduce((total, thread) => total + thread.comments.length, 0),
+      totalComments: threads.reduce((total, thread) => total + thread.commentCount, 0),
       unresolvedThreads,
       resolvedThreads,
       additions,
       deletions
     };
+    this.overviewCache = { revision: this.overviewRevision, value };
+    return value;
+  }
+
+  getThreadDetails(threadIds: readonly string[]): ReviewThread[] {
+    if (!this.state || threadIds.length === 0) return [];
+    const requested = new Set(threadIds);
+    return this.state.threads.filter((thread) => requested.has(thread.id));
   }
 
   getWorkspaceAssociation(projectId: string, mergeRequestIid: number): MergeRequestWorkspaceAssociation | undefined {
@@ -179,7 +234,7 @@ export class ReviewStore {
     await this.context.workspaceState.update(REVIEW_CACHE_KEYS.workspaceAssociations, this.workspaceAssociations);
   }
 
-  getFileViewModel(filePath: string): FileReviewViewModel | undefined {
+  getFileViewModel(filePath: string, options: ReviewFileViewOptions = {}): FileReviewViewModel | undefined {
     const file = this.findFile(filePath);
     if (!file || !this.state) {
       return undefined;
@@ -187,15 +242,110 @@ export class ReviewStore {
 
     const localEdit = this.getLocalEdit(this.state.id, filePath);
     const threads = this.getThreadsForFile(filePath);
+    const contentKey = reviewFileContentKey(this.state, file);
+    const cachedContents = this.reviewFileContentCache.get(contentKey);
+    if (cachedContents) cachedContents.updatedAt = Date.now();
+    const contents = cachedContents?.contents;
+    const lineKey = this.reviewLineCacheKey(this.state, file, Boolean(contents), localEdit, threads);
+    let allLines = this.reviewLineCache.get(lineKey)?.lines;
+    let contentMode: FileReviewViewModel["contentMode"] = contents ? "full" : "patch";
+    if (!allLines) {
+      if (contents && shouldBuildReviewLinesInWorker(contents.oldText, contents.mrText, localEdit?.editedText)) {
+        this.prepareReviewLines(lineKey, contents.oldText, contents.mrText, localEdit?.editedText, threads);
+        allLines = buildReviewLinesFromPatch(file.patch, threads);
+        contentMode = "patch";
+      } else {
+        allLines = contents
+          ? buildReviewLines(contents.oldText, contents.mrText, localEdit?.editedText, threads)
+          : buildReviewLinesFromPatch(file.patch, threads);
+        this.cacheReviewLines(lineKey, allLines);
+      }
+    } else {
+      const cached = this.reviewLineCache.get(lineKey);
+      if (cached) cached.updatedAt = Date.now();
+    }
+
+    let start = Math.max(0, Math.floor(options.windowStart ?? 0));
+    if (typeof options.targetLine === "number") {
+      const targetIndex = allLines.findIndex((line) => line.mrLine === options.targetLine || line.oldLine === options.targetLine);
+      if (targetIndex >= 0) start = Math.max(0, targetIndex - Math.floor(cacheLimits.lineWindow / 3));
+    }
+    start = Math.min(start, Math.max(0, allLines.length - 1));
+    const end = Math.min(allLines.length, start + cacheLimits.lineWindow);
+    const windowLines = allLines.slice(start, end);
+    const visibleThreadIds = new Set(windowLines.flatMap((line) => line.threadIds));
+    const contentError = this.reviewFileContentErrors.get(contentKey);
+    const fullFileState = options.fullFileStateOverride
+      ?? (contents ? "loaded" : file.tooLarge ? "too-large" : contentError?.state ?? "not-loaded");
     return {
-      file,
+      file: toReviewFileView(file),
       summary: this.getFileSummary(file),
-      threads,
-      lines: buildReviewLines(file.oldText, file.mrText, localEdit?.editedText, threads),
-      editableText: localEdit?.editedText ?? file.mrText,
-      hasLocalEdit: Boolean(localEdit && localEdit.editedText !== file.mrText),
-      localEditUpdatedAt: localEdit?.updatedAt
+      threads: options.includeEditableText
+        ? threads
+        : threads.filter((thread) => visibleThreadIds.has(thread.id)),
+      lines: windowLines,
+      editableText: options.includeEditableText && contents
+        ? localEdit?.editedText ?? contents.mrText
+        : undefined,
+      hasLocalEdit: Boolean(localEdit),
+      localEditUpdatedAt: localEdit?.updatedAt,
+      contentMode,
+      fullFileState,
+      fullFileMessage: options.fullFileMessage
+        ?? contentError?.message
+        ?? (file.tooLarge ? "GitLab marked this file as too large to display." : undefined),
+      lineWindow: {
+        start,
+        end,
+        total: allLines.length,
+        hasPrevious: start > 0,
+        hasNext: end < allLines.length
+      }
     };
+  }
+
+  async loadReviewFileContents(filePath: string): Promise<ReviewFileContents> {
+    const review = this.state;
+    const file = this.findFile(filePath);
+    if (!review || !file) throw new Error("The review file is unavailable.");
+    const cacheKey = reviewFileContentKey(review, file);
+    const cached = this.reviewFileContentCache.get(cacheKey);
+    if (cached) {
+      cached.updatedAt = Date.now();
+      return cached.contents;
+    }
+    const existing = this.reviewFileContentLoads.get(cacheKey);
+    if (existing) return existing;
+
+    const reviewId = review.id;
+    this.reviewFileContentErrors.delete(cacheKey);
+    const load = this.getClient().loadMergeRequestFileContents(review, file)
+      .then((contents) => {
+        if (this.state?.id !== reviewId) throw new Error("The selected merge request changed while loading the file.");
+        const threads = this.getThreadsForFile(filePath);
+        const localEdit = this.getLocalEdit(review.id, filePath);
+        return buildReviewLinesAsync(contents.oldText, contents.mrText, localEdit?.editedText, threads)
+          .then((lines) => {
+            if (this.state?.id !== reviewId) throw new Error("The selected merge request changed while calculating the diff.");
+            this.cacheReviewFileContents(cacheKey, contents);
+            this.cacheReviewLines(this.reviewLineCacheKey(review, file, true, localEdit, threads), lines);
+            this.reviewFileContentErrors.delete(cacheKey);
+            return contents;
+          });
+      })
+      .catch((error: unknown) => {
+        if (this.state?.id === reviewId) {
+          const state = error instanceof GitLabFileContentError ? error.code : "error";
+          this.reviewFileContentErrors.set(cacheKey, {
+            state: state === "unavailable" ? "error" : state,
+            message: error instanceof Error ? error.message : "Could not load the full file."
+          });
+        }
+        throw error;
+      })
+      .finally(() => this.reviewFileContentLoads.delete(cacheKey));
+    this.reviewFileContentLoads.set(cacheKey, load);
+    return load;
   }
 
   async refresh(): Promise<void> {
@@ -205,7 +355,7 @@ export class ReviewStore {
       this.loadState = "loading";
     }
     this.errorMessage = undefined;
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
 
     const reference = this.getSelectedReference();
     const previousState = reference
@@ -250,7 +400,7 @@ export class ReviewStore {
     } finally {
       if (generation === this.refreshGeneration) {
         this.isRefreshing = false;
-        this.onDidChangeEmitter.fire();
+        this.emitChange();
       }
     }
   }
@@ -269,7 +419,7 @@ export class ReviewStore {
     this.lastLoadedReference = undefined;
     this.loadState = "loading";
     this.errorMessage = undefined;
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
     this.selectedReference = nextReference;
     this.persistBestEffort(REVIEW_CACHE_KEYS.selectedMergeRequest, this.selectedReference);
     const refresh = this.refresh();
@@ -280,7 +430,7 @@ export class ReviewStore {
           this.lastLoadedReference = nextReference;
           this.loadState = "ready";
           this.errorMessage = undefined;
-          this.onDidChangeEmitter.fire();
+          this.emitChange();
         }, cachedReviewRevealDelayMs)
       : undefined;
     try {
@@ -293,7 +443,7 @@ export class ReviewStore {
   async setThreadSortOrder(order: ReviewThreadSortOrder): Promise<void> {
     this.threadSortOrder = normalizeThreadSortOrder(order);
     await this.context.workspaceState.update(REVIEW_CACHE_KEYS.threadSortOrder, this.threadSortOrder);
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
   }
 
   getIsRefreshing(): boolean {
@@ -353,7 +503,14 @@ export class ReviewStore {
     if (!review || !review.commits.some((commit) => commit.id === commitId)) {
       throw new Error("The commit is not part of the current merge request.");
     }
-    return this.getClient().loadCommitFileContents(review.projectId, commitId, file);
+    const contents = await this.getClient().loadCommitFileContents(review.projectId, commitId, file);
+    const threads = this.getThreadsForFile(file.path);
+    const threadLayout = threads
+      .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
+      .join("|");
+    const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
+    this.cacheReviewLines(`commit:${commitId}:${file.path}:full:${threadLayout}`, lines);
+    return contents;
   }
 
   async loadCommitFileReviewContext(commitId: string, filePath: string): Promise<CommitFileReviewContext> {
@@ -366,47 +523,83 @@ export class ReviewStore {
     return { commit, file };
   }
 
-  buildCommitFileViewModel(context: CommitFileReviewContext): FileReviewViewModel {
+  buildCommitFileViewModel(
+    context: CommitFileReviewContext,
+    options: ReviewFileViewOptions = {}
+  ): FileReviewViewModel {
     const reviewFile = this.findFile(context.file.path);
     const threads = this.getThreadsForFile(context.file.path);
-    const lines = context.contents
-      ? buildReviewLines(context.contents.oldText, context.contents.newText, undefined, threads)
-      : buildCommitPatchLines(context.file.diff, threads);
-    const file: ReviewFile = reviewFile
-      ? {
-        ...reviewFile,
-        oldText: context.contents?.oldText ?? "",
-        mrText: context.contents?.newText ?? ""
+    const counts = countPatchDiff(context.file.diff);
+    const file: ReviewFile = reviewFile ?? {
+      path: context.file.path,
+      language: inferLanguage(context.file.path),
+      oldPath: context.file.oldPath,
+      newPath: context.file.newPath,
+      patch: context.file.diff,
+      status: context.file.status,
+      newFile: context.file.newFile,
+      deletedFile: context.file.deletedFile,
+      renamedFile: context.file.renamedFile,
+      collapsed: context.file.collapsed,
+      tooLarge: context.file.tooLarge,
+      generatedFile: false,
+      ...counts
+    };
+    const threadLayout = threads
+      .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
+      .join("|");
+    const lineKey = `commit:${context.commit.id}:${context.file.path}:${context.contents ? "full" : "patch"}:${threadLayout}`;
+    let allLines = this.reviewLineCache.get(lineKey)?.lines;
+    let contentMode: FileReviewViewModel["contentMode"] = context.contents ? "full" : "patch";
+    if (!allLines) {
+      if (context.contents && shouldBuildReviewLinesInWorker(context.contents.oldText, context.contents.newText)) {
+        this.prepareReviewLines(lineKey, context.contents.oldText, context.contents.newText, undefined, threads);
+        allLines = buildReviewLinesFromPatch(context.file.diff, threads);
+        contentMode = "patch";
+      } else {
+        allLines = context.contents
+          ? buildReviewLines(context.contents.oldText, context.contents.newText, undefined, threads)
+          : buildReviewLinesFromPatch(context.file.diff, threads);
+        this.cacheReviewLines(lineKey, allLines);
       }
-      : {
-        path: context.file.path,
-        language: inferLanguage(context.file.path),
-        oldText: context.contents?.oldText ?? "",
-        mrText: context.contents?.newText ?? "",
-        oldPath: context.file.oldPath,
-        newPath: context.file.newPath
-      };
-    const counts = context.contents
-      ? countLineDiff(file.oldText, file.mrText)
-      : {
-        additions: lines.filter((line) => line.kind === "mr-added").length,
-        deletions: lines.filter((line) => line.kind === "mr-removed").length
-      };
+    }
+    let start = Math.max(0, Math.floor(options.windowStart ?? 0));
+    if (typeof options.targetLine === "number") {
+      const targetIndex = allLines.findIndex((line) => line.mrLine === options.targetLine || line.oldLine === options.targetLine);
+      if (targetIndex >= 0) start = Math.max(0, targetIndex - Math.floor(cacheLimits.lineWindow / 3));
+    }
+    start = Math.min(start, Math.max(0, allLines.length - 1));
+    const end = Math.min(allLines.length, start + cacheLimits.lineWindow);
+    const windowLines = allLines.slice(start, end);
+    const visibleThreadIds = new Set(windowLines.flatMap((line) => line.threadIds));
+    const visibleCounts = counts;
     return {
-      file,
+      file: toReviewFileView(file),
       summary: {
         path: file.path,
         language: file.language,
-        ...counts,
+        ...visibleCounts,
         threadCount: threads.length,
         unresolvedThreadCount: threads.filter((thread) => !thread.resolved).length,
         resolvedThreadCount: threads.filter((thread) => thread.resolved).length,
         hasLocalEdit: false
       },
-      threads,
-      lines,
-      editableText: context.contents?.newText ?? "",
-      hasLocalEdit: false
+      threads: threads.filter((thread) => visibleThreadIds.has(thread.id)),
+      lines: windowLines,
+      editableText: options.includeEditableText ? context.contents?.newText : undefined,
+      hasLocalEdit: false,
+      contentMode,
+      fullFileState: options.fullFileStateOverride
+        ?? (context.contents ? "loaded" : context.file.tooLarge ? "too-large" : "not-loaded"),
+      fullFileMessage: options.fullFileMessage
+        ?? (context.file.tooLarge ? "GitLab marked this file as too large to display." : undefined),
+      lineWindow: {
+        start,
+        end,
+        total: allLines.length,
+        hasPrevious: start > 0,
+        hasNext: end < allLines.length
+      }
     };
   }
 
@@ -452,7 +645,7 @@ export class ReviewStore {
     };
     thread.comments.push(pendingComment);
     thread.pending = true;
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
 
     try {
       const confirmedComment = await this.getClient().addReply(review, threadId, trimmed);
@@ -462,14 +655,14 @@ export class ReviewStore {
       }
       thread.pending = false;
       this.persistReviewState();
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
     } catch {
       const index = thread.comments.findIndex((comment) => comment.id === pendingComment.id);
       if (index >= 0) {
         thread.comments.splice(index, 1);
       }
       thread.pending = false;
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
       void vscode.window.showErrorMessage("GitLab への返信を追加できませんでした。");
     }
   }
@@ -488,7 +681,7 @@ export class ReviewStore {
     comment.body = trimmed;
     comment.updatedAt = editedTimestamp(comment.createdAt);
     comment.pending = true;
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
 
     try {
       const confirmed = await this.getClient().updateComment(review, threadId, commentId, trimmed);
@@ -502,10 +695,10 @@ export class ReviewStore {
         pending: false
       };
       this.persistReviewState();
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
     } catch {
       thread.comments[commentIndex] = previous;
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
       void vscode.window.showErrorMessage("GitLab のコメントを編集できませんでした。");
     }
   }
@@ -520,7 +713,7 @@ export class ReviewStore {
     const previousResolved = thread.resolved;
     thread.resolved = !previousResolved;
     thread.pending = true;
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
 
     try {
       const confirmedThread = await this.getClient().setResolved(review, threadId, thread.resolved);
@@ -537,11 +730,11 @@ export class ReviewStore {
       });
       this.replaceThread(threadId, confirmedThread);
       this.persistReviewState();
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
     } catch {
       thread.resolved = previousResolved;
       thread.pending = false;
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
       void vscode.window.showErrorMessage("GitLab のスレッド状態を更新できませんでした。");
     }
   }
@@ -578,20 +771,59 @@ export class ReviewStore {
       }]
     };
     review.threads.push(pendingThread);
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
 
     try {
       const confirmedThread = await this.getClient().createThread(review, file, mrLine, oldLine, trimmed);
       this.replaceThread(pendingThread.id, confirmedThread);
       this.persistReviewState();
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
     } catch {
       const index = review.threads.findIndex((thread) => thread.id === pendingThread.id);
       if (index >= 0) {
         review.threads.splice(index, 1);
       }
-      this.onDidChangeEmitter.fire();
+      this.emitChange();
       void vscode.window.showErrorMessage("GitLab のレビューコメントを追加できませんでした。");
+    }
+  }
+
+  async addOverviewThread(body: string): Promise<void> {
+    const review = this.state;
+    const trimmed = body.trim();
+    if (!review || !trimmed) {
+      return;
+    }
+
+    const pendingThread: ReviewThread = {
+      id: pendingId("thread"),
+      resolved: false,
+      resolvable: false,
+      pending: true,
+      comments: [{
+        id: pendingId("comment"),
+        author: "you",
+        body: trimmed,
+        createdAt: new Date().toISOString(),
+        canEdit: true,
+        pending: true
+      }]
+    };
+    review.threads.push(pendingThread);
+    this.emitChange();
+
+    try {
+      const confirmedThread = await this.getClient().createOverviewThread(review, trimmed);
+      this.replaceThread(pendingThread.id, confirmedThread);
+      this.persistReviewState();
+      this.emitChange();
+    } catch {
+      const index = review.threads.findIndex((thread) => thread.id === pendingThread.id);
+      if (index >= 0) {
+        review.threads.splice(index, 1);
+      }
+      this.emitChange();
+      void vscode.window.showErrorMessage("GitLab のレビュースレッドを追加できませんでした。");
     }
   }
 
@@ -602,16 +834,22 @@ export class ReviewStore {
       return;
     }
 
+    const contents = this.reviewFileContentCache.get(reviewFileContentKey(review, file))?.contents
+      ?? await this.loadReviewFileContents(filePath);
     const edits = this.localEdits[review.id] ?? {};
-    if (editedText === file.mrText) {
+    if (editedText === contents.mrText) {
       delete edits[filePath];
     } else {
-      edits[filePath] = { filePath, editedText, updatedAt: new Date().toISOString() };
+      const localEdit = { filePath, editedText, updatedAt: new Date().toISOString() };
+      const threads = this.getThreadsForFile(filePath);
+      const lines = await buildReviewLinesAsync(contents.oldText, contents.mrText, editedText, threads);
+      this.cacheReviewLines(this.reviewLineCacheKey(review, file, true, localEdit, threads), lines);
+      edits[filePath] = localEdit;
     }
 
     this.localEdits[review.id] = edits;
     await this.persistLocalEdits();
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
   }
 
   async clearLocalEdit(filePath: string): Promise<void> {
@@ -621,11 +859,10 @@ export class ReviewStore {
 
     delete this.localEdits[this.state.id][filePath];
     await this.persistLocalEdits();
-    this.onDidChangeEmitter.fire();
+    this.emitChange();
   }
 
   private getFileSummary(file: ReviewFile): FileSummary {
-    const diff = countLineDiff(file.oldText, file.mrText);
     const threads = this.getThreadsForFile(file.path);
     const resolvedThreadCount = threads.filter((thread) => thread.resolvable !== false && thread.resolved).length;
     const localEdit = this.state ? this.getLocalEdit(this.state.id, file.path) : undefined;
@@ -633,20 +870,30 @@ export class ReviewStore {
     return {
       path: file.path,
       language: file.language,
-      additions: diff.additions,
-      deletions: diff.deletions,
+      additions: file.additions,
+      deletions: file.deletions,
       threadCount: threads.length,
       resolvedThreadCount,
       unresolvedThreadCount: threads.filter((thread) => thread.resolvable !== false).length - resolvedThreadCount,
-      hasLocalEdit: Boolean(localEdit && localEdit.editedText !== file.mrText),
+      hasLocalEdit: Boolean(localEdit),
       localEditUpdatedAt: localEdit?.updatedAt
     };
   }
 
   private getThreadsForFile(filePath: string): ReviewThread[] {
-    return (this.state?.threads ?? [])
-      .filter((thread) => thread.filePath === filePath)
-      .sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+    if (!this.threadIndex) {
+      this.threadIndex = new Map<string, ReviewThread[]>();
+      for (const thread of this.state?.threads ?? []) {
+        if (!thread.filePath) continue;
+        const items = this.threadIndex.get(thread.filePath) ?? [];
+        items.push(thread);
+        this.threadIndex.set(thread.filePath, items);
+      }
+      for (const items of this.threadIndex.values()) {
+        items.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+      }
+    }
+    return this.threadIndex.get(filePath) ?? [];
   }
 
   private getSelectedReference(): MergeRequestReference | undefined {
@@ -675,7 +922,10 @@ export class ReviewStore {
   }
 
   private findFile(filePath: string): ReviewFile | undefined {
-    return this.state?.files.find((file) => file.path === filePath);
+    if (!this.fileIndex) {
+      this.fileIndex = new Map((this.state?.files ?? []).map((file) => [file.path, file]));
+    }
+    return this.fileIndex.get(filePath);
   }
 
   private replaceThread(threadId: string, replacement: ReviewThread): void {
@@ -693,6 +943,96 @@ export class ReviewStore {
     return this.localEdits[reviewId]?.[filePath];
   }
 
+  private reviewLineCacheKey(
+    review: ReviewState,
+    file: ReviewFile,
+    hasContents: boolean,
+    localEdit: LocalEdit | undefined,
+    threads: readonly ReviewThread[]
+  ): string {
+    const threadLayout = threads
+      .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
+      .join("|");
+    return `${reviewFileContentKey(review, file)}:${hasContents ? "full" : `patch:${file.patch?.length ?? 0}`}:${localEdit?.updatedAt ?? ""}:${threadLayout}`;
+  }
+
+  private emitChange(): void {
+    this.overviewRevision += 1;
+    this.overviewCache = undefined;
+    this.threadIndex = undefined;
+    this.fileIndex = undefined;
+    this.onDidChangeEmitter.fire();
+  }
+
+  private cacheReviewFileContents(key: string, contents: ReviewFileContents): void {
+    const characters = Buffer.byteLength(contents.oldText, "utf8") + Buffer.byteLength(contents.mrText, "utf8");
+    const previous = this.reviewFileContentCache.get(key);
+    if (previous) this.reviewFileContentCharacters -= previous.characters;
+    this.reviewFileContentCache.set(key, { contents, characters, updatedAt: Date.now() });
+    this.reviewFileContentCharacters += characters;
+    while (
+      (this.reviewFileContentCache.size > cacheLimits.reviewFileContents
+        || this.reviewFileContentCharacters > cacheLimits.reviewFileContentCharacters)
+      && this.reviewFileContentCache.size > 1
+    ) {
+      const oldest = [...this.reviewFileContentCache]
+        .reduce((candidate, entry) => entry[1].updatedAt < candidate[1].updatedAt ? entry : candidate);
+      this.reviewFileContentCache.delete(oldest[0]);
+      this.reviewFileContentCharacters -= oldest[1].characters;
+    }
+  }
+
+  private cacheReviewLines(key: string, lines: ReviewLine[]): void {
+    const characters = lines.reduce(
+      (total, line) => total + Buffer.byteLength(line.text, "utf8") + Buffer.byteLength(line.id, "utf8") + 32,
+      0
+    );
+    const previous = this.reviewLineCache.get(key);
+    if (previous) this.reviewLineCharacters -= previous.characters;
+    this.reviewLineFailures.delete(key);
+    this.reviewLineCache.set(key, { lines, characters, updatedAt: Date.now() });
+    this.reviewLineCharacters += characters;
+    while (
+      (this.reviewLineCache.size > cacheLimits.reviewLineEntries
+        || this.reviewLineCharacters > cacheLimits.reviewLineCharacters)
+      && this.reviewLineCache.size > 1
+    ) {
+      const oldest = [...this.reviewLineCache]
+        .reduce((candidate, entry) => entry[1].updatedAt < candidate[1].updatedAt ? entry : candidate);
+      this.reviewLineCache.delete(oldest[0]);
+      this.reviewLineCharacters -= oldest[1].characters;
+    }
+  }
+
+  private prepareReviewLines(
+    key: string,
+    oldText: string,
+    mrText: string,
+    localText: string | undefined,
+    threads: readonly ReviewThread[]
+  ): void {
+    if (this.reviewLineLoads.has(key) || this.reviewLineFailures.has(key)) return;
+    let succeeded = false;
+    const load = buildReviewLinesAsync(oldText, mrText, localText, threads)
+      .then((lines) => {
+        this.cacheReviewLines(key, lines);
+        succeeded = true;
+      })
+      .catch(() => {
+        // Keep the patch view usable if a very large full-file diff cannot be calculated.
+        this.reviewLineFailures.add(key);
+        if (this.reviewLineFailures.size > 50) {
+          const oldest = this.reviewLineFailures.values().next().value as string | undefined;
+          if (oldest) this.reviewLineFailures.delete(oldest);
+        }
+      })
+      .finally(() => {
+        this.reviewLineLoads.delete(key);
+        if (succeeded) this.emitChange();
+      });
+    this.reviewLineLoads.set(key, load);
+  }
+
   private persistLocalEdits(): Thenable<void> {
     return this.context.workspaceState.update(REVIEW_CACHE_KEYS.localEdits, this.localEdits);
   }
@@ -701,15 +1041,12 @@ export class ReviewStore {
     if (!this.state) {
       return;
     }
-    try {
-      if (JSON.stringify(this.state).length <= cacheLimits.reviewStateCharacters) {
-        this.persistBestEffort(REVIEW_CACHE_KEYS.reviewState, this.state);
-      } else {
-        this.persistBestEffort(REVIEW_CACHE_KEYS.reviewState, undefined);
-      }
-    } catch {
-      // Keep the in-memory state if it cannot be serialized.
-    }
+    const lightweightState: ReviewState = {
+      ...this.state,
+      files: this.state.files.map(({ patch: _patch, ...file }) => file)
+    };
+    this.persistBestEffort(REVIEW_CACHE_KEYS.lightweightReviewState, lightweightState);
+    this.persistBestEffort(REVIEW_CACHE_KEYS.reviewState, undefined);
   }
 
   private cacheReviewState(state: ReviewState): void {
@@ -717,6 +1054,11 @@ export class ReviewStore {
     this.reviewStateCache.delete(key);
     this.reviewStateCache.set(key, state);
     while (this.reviewStateCache.size > cacheLimits.reviewStates) {
+      const oldest = this.reviewStateCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.reviewStateCache.delete(oldest);
+    }
+    while (reviewStatePatchSize(this.reviewStateCache.values()) > cacheLimits.reviewStateCharacters && this.reviewStateCache.size > 1) {
       const oldest = this.reviewStateCache.keys().next().value as string | undefined;
       if (!oldest) break;
       this.reviewStateCache.delete(oldest);
@@ -839,43 +1181,6 @@ function toMergeRequestOption(state: ReviewState): MergeRequestOption {
   };
 }
 
-function buildCommitPatchLines(diff: string, threads: readonly ReviewThread[]): ReviewLine[] {
-  const byNewLine = new Map<number, ReviewThread[]>();
-  const byOldLine = new Map<number, ReviewThread[]>();
-  for (const thread of threads) {
-    const newLine = thread.newLine ?? thread.line;
-    if (typeof newLine === "number") {
-      byNewLine.set(newLine, [...(byNewLine.get(newLine) ?? []), thread]);
-    }
-    if (typeof thread.oldLine === "number") {
-      byOldLine.set(thread.oldLine, [...(byOldLine.get(thread.oldLine) ?? []), thread]);
-    }
-  }
-
-  return parseCommitDiff(diff).map((line, index) => {
-    const kind: ReviewLineKind = line.kind === "added"
-      ? "mr-added"
-      : line.kind === "deleted"
-        ? "mr-removed"
-        : "context";
-    const lineThreads = line.kind === "deleted"
-      ? byOldLine.get(line.oldLine ?? -1) ?? []
-      : byNewLine.get(line.newLine ?? -1) ?? [];
-    const text = line.kind === "added" || line.kind === "deleted" || line.kind === "context"
-      ? line.text.slice(1)
-      : line.text;
-    return {
-      id: `commit-${index}`,
-      kind,
-      text,
-      oldLine: line.oldLine,
-      mrLine: line.newLine,
-      localLine: line.newLine,
-      threads: lineThreads
-    };
-  });
-}
-
 function sameReference(
   left: MergeRequestReference | undefined,
   right: MergeRequestReference | undefined
@@ -909,6 +1214,96 @@ function commitDiffSize(files: readonly CommitDiffFile[]): number {
     (total, file) => total + file.diff.length + file.oldPath.length + file.newPath.length,
     0
   );
+}
+
+function reviewFileContentKey(review: ReviewState, file: ReviewFile): string {
+  return `${review.id}:${review.diffRefs?.baseSha ?? ""}:${review.diffRefs?.headSha ?? ""}:${file.oldPath}:${file.newPath}`;
+}
+
+function toReviewFileView(file: ReviewFile): ReviewFileView {
+  return {
+    path: file.path,
+    language: file.language,
+    oldPath: file.oldPath,
+    newPath: file.newPath,
+    status: file.status,
+    newFile: file.newFile,
+    deletedFile: file.deletedFile,
+    renamedFile: file.renamedFile,
+    collapsed: file.collapsed,
+    tooLarge: file.tooLarge,
+    generatedFile: file.generatedFile
+  };
+}
+
+function toReviewThreadSummary(thread: ReviewThread): ReviewThreadSummary {
+  const authors = new Map<string, ReviewThreadSummary["authors"][number]>();
+  for (const comment of thread.comments) {
+    const name = comment.author || "GitLab user";
+    const key = comment.authorId ?? name.trim().toLowerCase();
+    const current = authors.get(key);
+    if (!current || (!current.avatarUrl && comment.avatarUrl)) {
+      authors.set(key, { id: comment.authorId, name, avatarUrl: comment.avatarUrl });
+    }
+  }
+  const last = thread.comments.at(-1);
+  return {
+    id: thread.id,
+    filePath: thread.filePath,
+    line: thread.line,
+    oldLine: thread.oldLine,
+    newLine: thread.newLine,
+    resolved: thread.resolved,
+    resolvable: thread.resolvable,
+    pending: thread.pending,
+    commentCount: thread.comments.length,
+    authors: [...authors.values()],
+    lastComment: last ? { author: last.author, createdAt: last.createdAt } : undefined
+  };
+}
+
+function reviewStatePatchSize(states: Iterable<ReviewState>): number {
+  let total = 0;
+  for (const state of states) {
+    for (const file of state.files) total += file.patch?.length ?? 0;
+  }
+  return total;
+}
+
+function normalizeCachedReviewState(value: unknown): ReviewState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<ReviewState> & { files?: unknown[]; threads?: ReviewThread[] };
+  if (!candidate.id || !candidate.projectId || !candidate.mergeRequestIid || !Array.isArray(candidate.files)) return undefined;
+  const files = candidate.files.flatMap((raw): ReviewFile[] => {
+    if (!raw || typeof raw !== "object") return [];
+    const file = raw as Partial<ReviewFile> & { oldText?: string; mrText?: string };
+    if (!file.path) return [];
+    const counts = typeof file.additions === "number" && typeof file.deletions === "number"
+      ? { additions: file.additions, deletions: file.deletions }
+      : countLineDiff(file.oldText ?? "", file.mrText ?? "");
+    return [{
+      path: file.path,
+      language: file.language ?? inferLanguage(file.path),
+      oldPath: file.oldPath ?? file.path,
+      newPath: file.newPath ?? file.path,
+      patch: file.patch,
+      status: file.status ?? "modified",
+      newFile: file.newFile === true,
+      deletedFile: file.deletedFile === true,
+      renamedFile: file.renamedFile === true,
+      collapsed: file.collapsed === true,
+      tooLarge: file.tooLarge === true,
+      generatedFile: file.generatedFile === true,
+      ...counts
+    }];
+  });
+  return {
+    ...(candidate as ReviewState),
+    reviewers: candidate.reviewers ?? [],
+    commits: candidate.commits ?? [],
+    threads: candidate.threads ?? [],
+    files
+  };
 }
 
 function pendingId(kind: string): string {

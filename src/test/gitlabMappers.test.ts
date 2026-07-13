@@ -1,6 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inferLanguage, mapGitLabCommitDiffs, mapGitLabCommits, mapGitLabDiscussions, mapGitLabMyWorkMergeRequests, mapGitLabMyWorkTodos, mapGitLabTodos } from "../gitlabMappers";
+import {
+  inferLanguage,
+  mapGitLabCommitDiffs,
+  mapGitLabCommits,
+  mapGitLabDiscussions,
+  mapGitLabMyWorkMergeRequests,
+  mapGitLabMyWorkTodos,
+  mapGitLabReviewDiffs,
+  mapGitLabTodos
+} from "../gitlabMappers";
+
+test("mapGitLabReviewDiffs keeps lightweight patch metadata and counts", () => {
+  const [file] = mapGitLabReviewDiffs([{
+    old_path: "src/old.ts",
+    new_path: "src/new.ts",
+    diff: "@@ -1 +1,2 @@\n-old\n+new\n+extra",
+    renamed_file: true,
+    collapsed: true,
+    generated_file: true
+  }]);
+
+  assert.equal(file.path, "src/new.ts");
+  assert.equal(file.additions, 2);
+  assert.equal(file.deletions, 1);
+  assert.equal(file.renamedFile, true);
+  assert.equal(file.collapsed, true);
+  assert.equal(file.generatedFile, true);
+  assert.equal("oldText" in file, false);
+  assert.equal("mrText" in file, false);
+});
 
 test("mapGitLabDiscussions retains file positions and resolved status", () => {
   const threads = mapGitLabDiscussions([

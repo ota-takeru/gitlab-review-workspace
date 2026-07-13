@@ -1,10 +1,12 @@
 import type {
   CommitDiffFile,
+  CommitDiffFileSummary,
   CommitFileContents,
   FileReviewViewModel,
   RepositoryTreeEntry,
   ReviewCommit,
-  ReviewOverview
+  ReviewOverview,
+  ReviewThread
 } from "./reviewTypes";
 import type { LocalWorkspaceState } from "./localGitTypes";
 import type { MyWorkState } from "./myWorkTypes";
@@ -27,7 +29,7 @@ export interface CommitDiffState {
   phase: "hidden" | "loading" | "ready" | "error";
   mrKey?: string;
   commitId?: string;
-  files: CommitDiffFile[];
+  files: CommitDiffFileSummary[];
   errorMessage?: string;
 }
 
@@ -35,6 +37,7 @@ export interface SidebarViewState {
   activeTab: "review" | "my-work";
   myWork: MyWorkState;
   overview: ReviewOverview;
+  threadDetails: ReviewThread[];
   auth: WebviewAuthState;
   branchTree: BranchTreeState;
   commitDiff: CommitDiffState;
@@ -75,8 +78,10 @@ export type SidebarMessage =
   | { type: "openBranchFile"; branch: string; filePath: string }
   | { type: "openCommitFile"; commitId: string; filePath: string }
   | { type: "addComment"; threadId: string; body: string }
+  | { type: "addOverviewThread"; body: string }
   | { type: "editComment"; threadId: string; commentId: string; body: string }
   | { type: "toggleResolved"; threadId: string }
+  | { type: "setThreadExpanded"; threadId: string; expanded: boolean }
   | { type: "login" }
   | { type: "refreshAuth" }
   | { type: "refreshReview" }
@@ -96,6 +101,8 @@ export type SidebarMessage =
 
 export type ReviewFileMessage =
   | ReadyMessage
+  | { type: "loadFullFile" }
+  | { type: "loadLineWindow"; start: number }
   | { type: "enterEdit" }
   | { type: "cancelEdit" }
   | { type: "saveLocalEdit"; text: string }

@@ -10,7 +10,7 @@ import type {
   ReviewFileMessage,
   ReviewFileViewState
 } from "./webviewProtocol";
-import type { CommitFileContents, CommitFileReviewContext } from "./reviewTypes";
+import type { CommitFileReviewContext } from "./reviewTypes";
 
 type PanelMode = "review" | "edit";
 
@@ -74,7 +74,6 @@ export class ReviewFilePanelManager implements vscode.Disposable {
       const existing = this.panels.get(filePath);
       if (existing) {
         existing.openCommit(context);
-        this.prepareCommitContents(existing, commitId, context);
         return;
       }
 
@@ -90,25 +89,9 @@ export class ReviewFilePanelManager implements vscode.Disposable {
       );
       this.panels.set(filePath, panel);
       panel.openCommit(context);
-      this.prepareCommitContents(panel, commitId, context);
     } catch {
       void vscode.window.showErrorMessage("コミットのファイル差分を開けませんでした。");
     }
-  }
-
-  private prepareCommitContents(
-    panel: ReviewFilePanel,
-    commitId: string,
-    context: CommitFileReviewContext
-  ): void {
-    void this.store.loadCommitFileContents(commitId, context.file)
-      .then((contents) => {
-        context.contents = contents;
-        panel.setCommitContents(contents);
-      })
-      .catch(() => {
-        // The patch view remains usable when fetching the full file fails.
-      });
   }
 
   dispose(): void {
@@ -156,6 +139,10 @@ class ReviewFilePanel {
   private pendingLine?: number;
   private pendingThreadId?: string;
   private ready = false;
+  private lineWindowStart = 0;
+  private fullFileLoading = false;
+  private fullFileError?: string;
+  private postScheduled = false;
 
   constructor(
     context: vscode.ExtensionContext,
@@ -171,12 +158,16 @@ class ReviewFilePanel {
       "gitlabReview.fileReview",
       basename(filePath),
       vscode.ViewColumn.One,
-      { retainContextWhenHidden: true }
+      { retainContextWhenHidden: false }
     );
 
     this.panel.onDidDispose(onDispose);
     this.panel.onDidChangeViewState(({ webviewPanel }) => {
       this.onDidChangeActive(webviewPanel.active);
+      if (!webviewPanel.visible && this.commitContext?.contents) {
+        this.commitContext = { ...this.commitContext, contents: undefined };
+      }
+      if (webviewPanel.visible) this.postState();
     });
     this.panel.webview.onDidReceiveMessage((message: ReviewFileMessage) => {
       void this.handleMessage(message);
@@ -195,19 +186,17 @@ class ReviewFilePanel {
   openReview(line?: number, threadId?: string): void {
     this.commitContext = undefined;
     this.mode = "review";
+    this.lineWindowStart = 0;
+    this.fullFileError = undefined;
     this.reveal(line, threadId);
   }
 
   openCommit(context: CommitFileReviewContext): void {
     this.commitContext = context;
     this.mode = "review";
+    this.lineWindowStart = 0;
+    this.fullFileError = undefined;
     this.reveal();
-  }
-
-  setCommitContents(contents: CommitFileContents): void {
-    if (!this.commitContext) return;
-    this.commitContext.contents = contents;
-    this.postState();
   }
 
   isActive(): boolean {
@@ -219,27 +208,55 @@ class ReviewFilePanel {
   }
 
   refreshFromStore(): void {
-    if (this.mode === "edit" || this.store.getIsRefreshing()) return;
+    if (!this.panel.visible || this.mode === "edit" || this.store.getIsRefreshing()) return;
     this.postState();
   }
 
   refreshFromLocalWorkspace(): void {
     if (this.mode === "edit" && !this.canEditLocally()) this.mode = "review";
+    if (!this.panel.visible) return;
     this.postState();
   }
 
   private postState(): void {
-    if (!this.ready) return;
+    if (!this.ready || !this.panel.visible || this.postScheduled) return;
+    this.postScheduled = true;
+    queueMicrotask(() => {
+      this.postScheduled = false;
+      this.deliverState();
+    });
+  }
+
+  private deliverState(): void {
+    if (!this.ready || !this.panel.visible) return;
 
     const viewModel = this.commitContext
-      ? this.store.buildCommitFileViewModel(this.commitContext)
-      : this.store.getFileViewModel(this.filePath);
+      ? this.store.buildCommitFileViewModel(this.commitContext, {
+          windowStart: this.lineWindowStart,
+          targetLine: this.pendingLine,
+          includeEditableText: this.mode === "edit",
+          fullFileStateOverride: this.fullFileLoading ? "loading" : this.fullFileError ? "error" : undefined,
+          fullFileMessage: this.fullFileError
+        })
+      : this.store.getFileViewModel(this.filePath, {
+          windowStart: this.lineWindowStart,
+          targetLine: this.pendingLine,
+          includeEditableText: this.mode === "edit",
+          fullFileStateOverride: this.fullFileLoading ? "loading" : undefined,
+          fullFileMessage: this.fullFileError
+        });
     this.panel.title = viewModel
       ? `${basename(this.filePath)} ${this.mode === "edit" ? "(editing)" : "(review)"}`
       : basename(this.filePath);
 
     const targetLine = this.pendingLine;
     const targetThreadId = this.pendingThreadId;
+    const targetVisible = targetLine === undefined || Boolean(viewModel?.lines.some(
+      (line) => line.mrLine === targetLine || line.oldLine === targetLine
+    ));
+    if (!targetVisible && viewModel?.fullFileState === "not-loaded") {
+      void this.loadFullFile();
+    }
     const selectedMergeRequest = this.store.getOverview().selectedMergeRequest;
     const state: ReviewFileViewState = {
       mode: this.mode,
@@ -261,8 +278,8 @@ class ReviewFilePanel {
       .postMessage({ type: "state", state } satisfies HostMessage<ReviewFileViewState>)
       .then((delivered) => {
         if (!delivered) return;
-        if (this.pendingLine === targetLine) this.pendingLine = undefined;
-        if (this.pendingThreadId === targetThreadId) this.pendingThreadId = undefined;
+        if (targetVisible && this.pendingLine === targetLine) this.pendingLine = undefined;
+        if (targetVisible && this.pendingThreadId === targetThreadId) this.pendingThreadId = undefined;
       });
   }
 
@@ -272,12 +289,20 @@ class ReviewFilePanel {
         this.ready = true;
         this.postState();
         return;
+      case "loadFullFile":
+        await this.loadFullFile();
+        return;
+      case "loadLineWindow":
+        this.lineWindowStart = Math.max(0, Math.floor(message.start));
+        this.postState();
+        return;
       case "enterEdit":
         if (!this.canEditLocally()) {
           this.mode = "review";
           this.postState();
           return;
         }
+        if (!await this.loadFullFile()) return;
         this.mode = "edit";
         this.postState();
         return;
@@ -316,6 +341,35 @@ class ReviewFilePanel {
       case "resolveCommentImage":
         await this.handleCommentImage(message);
         return;
+    }
+  }
+
+  private async loadFullFile(): Promise<boolean> {
+    if (this.fullFileLoading) return false;
+    const currentModel = this.commitContext
+      ? this.store.buildCommitFileViewModel(this.commitContext)
+      : this.store.getFileViewModel(this.filePath);
+    if (currentModel?.fullFileState === "loaded") return true;
+    this.fullFileLoading = true;
+    this.fullFileError = undefined;
+    this.postState();
+    try {
+      const commitContext = this.commitContext;
+      if (commitContext) {
+        const contents = await this.store.loadCommitFileContents(commitContext.commit.id, commitContext.file);
+        if (this.commitContext !== commitContext || !this.panel.visible) return false;
+        commitContext.contents = contents;
+      } else {
+        await this.store.loadReviewFileContents(this.filePath);
+      }
+      this.lineWindowStart = 0;
+      return true;
+    } catch (error) {
+      this.fullFileError = error instanceof Error ? error.message : "Could not load the full file.";
+      return false;
+    } finally {
+      this.fullFileLoading = false;
+      this.postState();
     }
   }
 

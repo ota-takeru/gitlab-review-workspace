@@ -39,10 +39,15 @@ const state: ReviewFileViewState = {
     file: {
       path: "src/review.ts",
       language: "typescript",
-      oldText: "const answer = 41;\n",
-      mrText: "const answer = 42;\n",
       oldPath: "src/review.ts",
-      newPath: "src/review.ts"
+      newPath: "src/review.ts",
+      status: "modified",
+      newFile: false,
+      deletedFile: false,
+      renamedFile: false,
+      collapsed: false,
+      tooLarge: false,
+      generatedFile: false
     },
     summary: {
       path: "src/review.ts",
@@ -62,11 +67,14 @@ const state: ReviewFileViewState = {
         text: "const answer = 42;",
         mrLine: 10,
         localLine: 10,
-        threads: [thread]
+        threadIds: [thread.id]
       }
     ],
     editableText: "const answer = 42;\n",
-    hasLocalEdit: false
+    hasLocalEdit: false,
+    contentMode: "full",
+    fullFileState: "loaded",
+    lineWindow: { start: 0, end: 1, total: 1, hasPrevious: false, hasNext: false }
   }
 };
 
@@ -76,7 +84,7 @@ const noReplyState: ReviewFileViewState = {
   viewModel: {
     ...state.viewModel!,
     threads: [noReplyThread],
-    lines: state.viewModel!.lines.map((line) => ({ ...line, threads: [noReplyThread] }))
+    lines: state.viewModel!.lines.map((line) => ({ ...line, threadIds: [noReplyThread.id] }))
   }
 };
 
@@ -90,7 +98,7 @@ const sideBySideState: ReviewFileViewState = {
         kind: "mr-removed",
         text: "const answer = 41;",
         oldLine: 10,
-        threads: []
+        threadIds: []
       },
       state.viewModel!.lines[0]!
     ]
@@ -101,6 +109,24 @@ const editState: ReviewFileViewState = {
   ...state,
   mode: "edit",
   canEditLocally: true
+};
+
+const largeWindowState: ReviewFileViewState = {
+  ...state,
+  viewModel: {
+    ...state.viewModel!,
+    threads: [],
+    lines: Array.from({ length: 1_200 }, (_, index) => ({
+      id: `large-${index + 1}`,
+      kind: index % 100 === 0 ? "mr-added" as const : "context" as const,
+      text: `const generatedLine${index + 1} = ${index + 1};`,
+      oldLine: index % 100 === 0 ? undefined : index + 1,
+      mrLine: index + 1,
+      localLine: index + 1,
+      threadIds: []
+    })),
+    lineWindow: { start: 0, end: 1_200, total: 50_000, hasPrevious: false, hasNext: true }
+  }
 };
 
 function renderState(nextState: ReviewFileViewState) {
@@ -165,5 +191,14 @@ export const EditModeShowsAllReplyBodies: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Could we make this branch easier to follow?")).toBeVisible();
     await expect(canvas.getByText("I agree with this suggestion.")).toBeVisible();
+  }
+};
+
+export const LargeFileWindow: Story = {
+  render: () => renderState(largeWindowState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("1–1200 / 50000")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Next lines" })).toBeVisible();
   }
 };

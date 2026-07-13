@@ -17,6 +17,7 @@ export interface CommitFileDiffLine {
 }
 
 export function parseCommitDiff(diff: string): CommitPatchLine[] {
+  if (diff.length === 0) return [];
   let oldLine: number | undefined;
   let newLine: number | undefined;
 
