@@ -9,6 +9,25 @@ export interface ChangedFileTreeNode {
   file?: FileSummary;
 }
 
+export interface ReviewThreadAuthor {
+  id?: string;
+  name: string;
+  avatarUrl?: string;
+}
+
+export function reviewThreadAuthors(thread: Pick<ReviewThread, "comments">): ReviewThreadAuthor[] {
+  const authors = new Map<string, ReviewThreadAuthor>();
+  for (const comment of thread.comments) {
+    const name = comment.author || "GitLab user";
+    const key = comment.authorId || name.trim().toLowerCase();
+    const existing = authors.get(key);
+    if (!existing || (!existing.avatarUrl && comment.avatarUrl)) {
+      authors.set(key, { id: comment.authorId, name, avatarUrl: comment.avatarUrl });
+    }
+  }
+  return [...authors.values()];
+}
+
 export function sortReviewThreads(
   threads: readonly ReviewThread[],
   order: ReviewThreadSortOrder

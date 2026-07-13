@@ -32,6 +32,25 @@ export const ReviewRequested: Story = {
   }
 };
 
+export const MultipleReviewers: Story = {
+  args: {
+    item: mergeRequest({
+      reviewers: [
+        { id: "reviewer-1", username: "reviewer-one", name: "Reviewer One" },
+        { id: "reviewer-2", username: "reviewer-two", name: "Reviewer Two" }
+      ]
+    })
+  },
+  decorators: [
+    () => ({ template: '<div class="storybook-frame sidebar-narrow" style="min-height:0;padding:8px"><story /></div>' })
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTitle("Reviewer One")).toBeVisible();
+    await expect(canvas.getByTitle("Reviewer Two")).toBeVisible();
+  }
+};
+
 export const PipelineFailed: Story = {
   args: {
     item: mergeRequest({

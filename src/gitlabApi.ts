@@ -6,6 +6,7 @@ import {
   GitLabCommitDiff,
   GitLabTodo,
   GitLabMyWorkMergeRequest,
+  GitLabUserSummary,
   inferLanguage,
   mapGitLabDiscussions,
   mapGitLabCommits,
@@ -13,7 +14,8 @@ import {
   mapGitLabNote,
   mapGitLabTodos,
   mapGitLabMyWorkMergeRequests,
-  mapGitLabMyWorkTodos
+  mapGitLabMyWorkTodos,
+  mapGitLabReviewers
 } from "./gitlabMappers";
 import type { MyWorkSource, MyWorkSourceItem } from "./myWorkTypes";
 import {
@@ -39,6 +41,7 @@ export interface GitLabMergeRequest {
   source_branch: string;
   target_branch: string;
   author?: { username?: string; name?: string };
+  reviewers?: GitLabUserSummary[];
   web_url?: string;
   updated_at?: string;
   diff_refs?: {
@@ -253,6 +256,7 @@ export class GitLabReviewClient {
       sourceBranch: mergeRequest.source_branch,
       targetBranch: mergeRequest.target_branch,
       author: mergeRequest.author?.username ?? mergeRequest.author?.name ?? "GitLab user",
+      reviewers: mapGitLabReviewers(mergeRequest.reviewers),
       commits,
       files,
       threads: mapGitLabDiscussions(discussions, currentUser?.id)

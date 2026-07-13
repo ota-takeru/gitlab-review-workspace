@@ -7,6 +7,7 @@ import type {
   MyWorkSource,
   MyWorkSourceItem
 } from "./myWorkTypes";
+import type { ReviewUser } from "./reviewTypes";
 
 export function classifyMyWorkItem(item: Pick<MyWorkSourceItem, "hasPendingTodo" | "roles" | "draft">): MyWorkBucket {
   if (item.hasPendingTodo) return "attention";
@@ -117,6 +118,7 @@ function mergeSourceItems(left: MyWorkSourceItem, right: MyWorkSourceItem): MyWo
     sourceBranch: newer.sourceBranch || older.sourceBranch,
     targetBranch: newer.targetBranch || older.targetBranch,
     webUrl: newer.webUrl || older.webUrl,
+    reviewers: uniqueReviewers([...(left.reviewers ?? []), ...(right.reviewers ?? [])]),
     draft: left.draft || right.draft,
     roles: unique([...left.roles, ...right.roles]),
     attentionReasons: unique([...left.attentionReasons, ...right.attentionReasons]),
@@ -125,7 +127,22 @@ function mergeSourceItems(left: MyWorkSourceItem, right: MyWorkSourceItem): MyWo
 }
 
 function cloneSourceItem(item: MyWorkSourceItem): MyWorkSourceItem {
-  return { ...item, roles: unique(item.roles), attentionReasons: unique(item.attentionReasons) };
+  return {
+    ...item,
+    reviewers: uniqueReviewers(item.reviewers ?? []),
+    roles: unique(item.roles),
+    attentionReasons: unique(item.attentionReasons)
+  };
+}
+
+function uniqueReviewers(values: readonly ReviewUser[]): ReviewUser[] {
+  const seen = new Set<string>();
+  return values.filter((reviewer) => {
+    const key = reviewer.id ?? reviewer.username ?? reviewer.name;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function unique<T extends MyWorkRole | MyWorkAttentionReason>(values: readonly T[]): T[] {

@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from "vue";
 import { buildBranchTree } from "../../src/branchTreeUtils";
 import { isCommentEdited } from "../../src/commentUtils";
-import { buildChangedFileTree } from "../../src/reviewTreeUtils";
+import { buildChangedFileTree, reviewThreadAuthors } from "../../src/reviewTreeUtils";
 import {
   formatRelativeReplyTime,
   isCommitDiffForSelection,
@@ -16,6 +16,7 @@ import type { ReviewComment, ReviewThread, ReviewThreadSortOrder } from "../../s
 import type { HostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlAvatar from "../common/components/GlAvatar.vue";
+import GlAvatarGroup from "../common/components/GlAvatarGroup.vue";
 import GlButton from "../common/components/GlButton.vue";
 import GlComment from "../common/components/GlComment.vue";
 import GlCommentForm from "../common/components/GlCommentForm.vue";
@@ -26,6 +27,7 @@ import GlMarkdown from "../common/components/GlMarkdown.vue";
 import GlSection from "../common/components/GlSection.vue";
 import GlStatusBadge from "../common/components/GlStatusBadge.vue";
 import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
+import GlReviewerList from "../common/components/GlReviewerList.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
 import { vscode } from "../common/vscode";
 import MyWorkView from "./MyWorkView.vue";
@@ -383,6 +385,7 @@ onBeforeUnmount(() => {
             <strong>!{{ overview.selectedMergeRequest.iid }}</strong>
             <span>by {{ overview.author }}</span>
           </div>
+          <GlReviewerList :reviewers="overview.reviewers" />
         </div>
 
         <div class="branch-flow" aria-label="Merge request branches">
@@ -577,10 +580,12 @@ onBeforeUnmount(() => {
                 @click="toggleThread(thread)"
               >
                 <GlIcon name="chevron-right" :size="12" />
-                <GlAvatar
-                  :name="lastComment(thread)?.author || 'GitLab user'"
-                  :avatar-url="lastComment(thread)?.avatarUrl"
+                <GlAvatarGroup
+                  v-if="reviewThreadAuthors(thread).length"
+                  :items="reviewThreadAuthors(thread)"
+                  aria-label="Reply authors"
                 />
+                <GlAvatar v-else name="GitLab user" />
                 <span class="thread-heading">
                   <span v-if="isThreadCollapsed(thread)" class="thread-summary-line">
                     <strong class="reply-count-link">{{ replyCount(thread) }} replies</strong>

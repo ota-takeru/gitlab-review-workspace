@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { FileSummary, ReviewThread } from "../reviewTypes";
-import { buildChangedFileTree, sortReviewThreads } from "../reviewTreeUtils";
+import { buildChangedFileTree, reviewThreadAuthors, sortReviewThreads } from "../reviewTreeUtils";
 
 function thread(id: string, resolved: boolean, createdAt: string): ReviewThread {
   return {
@@ -32,6 +32,18 @@ test("sortReviewThreads supports open-first, oldest, and newest", () => {
     "open-new",
     "open-old",
     "resolved-old"
+  ]);
+});
+
+test("reviewThreadAuthors keeps each reply author and fills a missing avatar", () => {
+  const comments = [
+    { id: "1", author: "Reviewer One", authorId: "10", avatarUrl: undefined, body: "", createdAt: "" },
+    { id: "2", author: "Reviewer Two", authorId: "11", avatarUrl: "two.png", body: "", createdAt: "" },
+    { id: "3", author: "Reviewer One", authorId: "10", avatarUrl: "one.png", body: "", createdAt: "" }
+  ];
+  assert.deepEqual(reviewThreadAuthors({ comments }), [
+    { id: "10", name: "Reviewer One", avatarUrl: "one.png" },
+    { id: "11", name: "Reviewer Two", avatarUrl: "two.png" }
   ]);
 });
 
