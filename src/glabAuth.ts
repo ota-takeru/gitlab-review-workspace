@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { runGlab } from "./glabCommand";
-import { getGitLabHostname, glabLoginCommand } from "./glabAuthUtils";
+import { glabLoginCommand, type GitLabApiProtocol } from "./glabAuthUtils";
+import { GitLabHostResolver } from "./gitlabHostResolver";
 
 export type GlabAuthPhase = "checking" | "available" | "signedOut" | "unavailable";
 
@@ -15,10 +16,14 @@ export class GlabAuthService implements vscode.Disposable {
   private readonly onDidChangeStateEmitter = new vscode.EventEmitter<GlabAuthState>();
   private loginTerminal?: vscode.Terminal;
   private loginTerminalCloseListener?: vscode.Disposable;
+  private loginHostname = "gitlab.com";
+  private loginApiProtocol: GitLabApiProtocol = "https";
   private state: GlabAuthState = {
     phase: "checking",
     hostname: "gitlab.com"
   };
+
+  constructor(private readonly hostResolver = new GitLabHostResolver()) {}
 
   readonly onDidChangeState = this.onDidChangeStateEmitter.event;
 
@@ -27,11 +32,10 @@ export class GlabAuthService implements vscode.Disposable {
   }
 
   async refreshStatus(): Promise<GlabAuthState> {
-    const hostname = getGitLabHostname(
-      vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
-    );
-
-    if (!hostname) {
+    const resolvedHost = await this.hostResolver.resolve();
+    if (!resolvedHost) {
+      this.loginHostname = "gitlab.com";
+      this.loginApiProtocol = "https";
       this.setState({
         phase: "unavailable",
         hostname: "gitlab.com",
@@ -40,6 +44,9 @@ export class GlabAuthService implements vscode.Disposable {
       return this.state;
     }
 
+    const { hostname } = resolvedHost;
+    this.loginHostname = resolvedHost.loginHostname;
+    this.loginApiProtocol = resolvedHost.apiProtocol;
     this.setState({ phase: "checking", hostname });
 
     const version = await runGlab(["--version"], 10_000);
@@ -95,7 +102,7 @@ export class GlabAuthService implements vscode.Disposable {
     });
 
     terminal.show(true);
-    terminal.sendText(glabLoginCommand(state.hostname), true);
+    terminal.sendText(glabLoginCommand(this.loginHostname, this.loginApiProtocol), true);
   }
 
   dispose(): void {

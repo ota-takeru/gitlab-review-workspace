@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { BranchFileEditor } from "./branchFileEditor";
 import { CommentImageService } from "./commentImageService";
 import { GlabAuthService } from "./glabAuth";
+import { GitLabHostResolver } from "./gitlabHostResolver";
 import { LocalGitService } from "./localGitService";
 import { MyWorkStore } from "./myWorkStore";
 import { ReviewFilePanelManager } from "./reviewFilePanel";
@@ -9,13 +10,14 @@ import { ReviewStore } from "./reviewStore";
 import { SidebarProvider } from "./sidebarProvider";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const store = new ReviewStore(context);
-  const glabAuth = new GlabAuthService();
+  const hostResolver = new GitLabHostResolver();
+  const store = new ReviewStore(context, () => hostResolver.getBaseUrl());
+  const glabAuth = new GlabAuthService(hostResolver);
   const localGit = new LocalGitService(context);
-  const myWork = new MyWorkStore(context);
+  const myWork = new MyWorkStore(context, () => hostResolver.getBaseUrl());
   const commentImages = new CommentImageService(
     context.globalStorageUri.fsPath,
-    () => vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
+    () => hostResolver.getBaseUrl()
   );
   const filePanels = new ReviewFilePanelManager(context, store, localGit, commentImages);
   const branchFiles = new BranchFileEditor(store);
@@ -36,6 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const imageCacheConfigurationListener = vscode.workspace.onDidChangeConfiguration((event) => {
     if (event.affectsConfiguration("gitlabReview.gitlabBaseUrl")) {
       void commentImages.clearCache().catch(() => undefined);
+      void glabAuth.refreshStatus();
     }
   });
 

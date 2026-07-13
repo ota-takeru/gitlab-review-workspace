@@ -81,7 +81,11 @@ export class ReviewStore {
 
   readonly onDidChange = this.onDidChangeEmitter.event;
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly baseUrlProvider: () => string = () =>
+      vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
+  ) {
     const cachedState = this.context.workspaceState.get<ReviewState>(REVIEW_CACHE_KEYS.reviewState);
     this.state = cachedState
       ? {
@@ -660,9 +664,7 @@ export class ReviewStore {
   }
 
   private getClient(): GitLabReviewClient {
-    const baseUrl = vscode.workspace
-      .getConfiguration("gitlabReview")
-      .get<string>("gitlabBaseUrl", "https://gitlab.com");
+    const baseUrl = this.baseUrlProvider();
     const hostname = getGitLabHostname(baseUrl);
     if (!hostname) {
       throw new Error("Invalid GitLab host.");

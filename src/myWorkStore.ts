@@ -21,7 +21,11 @@ export class MyWorkStore implements vscode.Disposable {
 
   readonly onDidChange = this.onDidChangeEmitter.event;
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly baseUrlProvider: () => string = () =>
+      vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
+  ) {
     this.sourceCache = Object.fromEntries(SOURCES.map((source) => [source,
       this.context.workspaceState.get<MyWorkSourceItem[]>(`${CACHE_PREFIX}${source}`) ?? []
     ])) as MyWorkSourceCache;
@@ -88,7 +92,7 @@ export class MyWorkStore implements vscode.Disposable {
   }
 
   private getClient(): GitLabReviewClient {
-    const baseUrl = vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com");
+    const baseUrl = this.baseUrlProvider();
     return new GitLabReviewClient(getGitLabHostname(baseUrl) ?? "gitlab.com");
   }
 

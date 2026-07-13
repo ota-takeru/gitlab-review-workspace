@@ -49,6 +49,11 @@ test("normalizeGitLabRemoteUrl handles SSH, scp-like, HTTPS, and encoded paths",
     projectPath: "group/project",
     canonicalUrl: "https://gitlab.example.com/group/project"
   });
+  assert.deepEqual(normalizeGitLabRemoteUrl("https://gitlab.example.com:8443/group/project.git"), {
+    hostname: "gitlab.example.com:8443",
+    projectPath: "group/project",
+    canonicalUrl: "https://gitlab.example.com:8443/group/project"
+  });
 });
 
 test("matchGitLabProject compares project paths and optional hosts", () => {

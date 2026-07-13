@@ -6,6 +6,7 @@ const execFileAsync = promisify(execFile);
 export interface GlabCommandResult {
   ok: boolean;
   stdout: string;
+  stderr?: string;
 }
 
 export interface GlabBinaryCommandResult {
@@ -20,9 +21,14 @@ export async function runGlab(args: string[], timeout = 20_000): Promise<GlabCom
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true
     });
-    return { ok: true, stdout: result.stdout };
-  } catch {
-    return { ok: false, stdout: "" };
+    return { ok: true, stdout: result.stdout, stderr: result.stderr };
+  } catch (error) {
+    const commandError = error as { stdout?: unknown; stderr?: unknown };
+    return {
+      ok: false,
+      stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
+      stderr: typeof commandError.stderr === "string" ? commandError.stderr : ""
+    };
   }
 }
 
