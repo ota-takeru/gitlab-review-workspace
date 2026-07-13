@@ -5,7 +5,7 @@ import type { MyWorkSourceItem } from "../myWorkTypes";
 
 const item: MyWorkSourceItem = {
   projectId: "1", projectPath: "group/project", iid: 1, title: "Cached", state: "opened",
-  sourceBranch: "feature", targetBranch: "main", author: "me", draft: false,
+  sourceBranch: "feature", targetBranch: "main", author: "me", reviewers: [], draft: false,
   roles: [], attentionReasons: ["todo"], hasPendingTodo: true
 };
 

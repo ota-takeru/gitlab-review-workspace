@@ -91,6 +91,7 @@ export class ReviewStore {
       ? {
           ...cachedState,
           commits: cachedState.commits ?? [],
+          reviewers: cachedState.reviewers ?? [],
           threads: cachedState.threads.map((thread) => ({
             ...thread,
             comments: thread.comments.map((comment) => ({ ...comment, canEdit: false }))
@@ -156,6 +157,7 @@ export class ReviewStore {
       sourceBranch: this.state?.sourceBranch ?? "",
       targetBranch: this.state?.targetBranch ?? "",
       author: this.state?.author ?? "",
+      reviewers: this.state?.reviewers ?? [],
       commits: this.state?.commits ?? [],
       files,
       threads,

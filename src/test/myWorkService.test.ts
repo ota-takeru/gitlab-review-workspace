@@ -13,6 +13,7 @@ function item(overrides: Partial<MyWorkSourceItem> = {}): MyWorkSourceItem {
     sourceBranch: "feature",
     targetBranch: "main",
     author: "me",
+    reviewers: [],
     draft: false,
     roles: ["author"],
     attentionReasons: [],
@@ -32,6 +33,15 @@ test("dedupeMyWorkItems unions roles and attention reasons with attention preced
   assert.equal(result.bucket, "attention");
   assert.deepEqual(result.roles, ["author", "reviewer"]);
   assert.deepEqual(result.attentionReasons, ["review-requested", "todo", "mentioned"]);
+});
+
+test("dedupeMyWorkItems preserves reviewers from every source", () => {
+  const [result] = dedupeMyWorkItems([
+    item({ reviewers: [{ id: "1", name: "Reviewer One" }] }),
+    item({ reviewers: [{ id: "2", name: "Reviewer Two" }] })
+  ]);
+
+  assert.deepEqual(result.reviewers.map((reviewer) => reviewer.name), ["Reviewer One", "Reviewer Two"]);
 });
 
 test("dedupeMyWorkItems classifies assigned work as active and authored work as waiting", () => {

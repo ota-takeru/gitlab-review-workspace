@@ -7,6 +7,15 @@ import {
   ReviewThread
 } from "./reviewTypes";
 import type { MyWorkSource, MyWorkSourceItem } from "./myWorkTypes";
+import type { ReviewUser } from "./reviewTypes";
+
+export interface GitLabUserSummary {
+  id?: number | string;
+  username?: string;
+  name?: string;
+  avatar_url?: string;
+  web_url?: string;
+}
 
 export interface GitLabCommit {
   id?: string;
@@ -72,6 +81,7 @@ export interface GitLabTodo {
     draft?: boolean;
     work_in_progress?: boolean;
     author?: { username?: string; name?: string };
+    reviewers?: GitLabUserSummary[];
   };
   target_url?: string;
   created_at?: string;
@@ -85,6 +95,7 @@ export interface GitLabMyWorkMergeRequest {
   source_branch?: string;
   target_branch?: string;
   author?: { username?: string; name?: string };
+  reviewers?: GitLabUserSummary[];
   web_url?: string;
   updated_at?: string;
   draft?: boolean;
@@ -170,6 +181,7 @@ export function mapGitLabMyWorkMergeRequests(
       sourceBranch: mergeRequest.source_branch ?? "",
       targetBranch: mergeRequest.target_branch ?? "",
       author: mergeRequest.author?.username ?? mergeRequest.author?.name ?? "GitLab user",
+      reviewers: mapGitLabReviewers(mergeRequest.reviewers),
       webUrl: mergeRequest.web_url,
       updatedAt: mergeRequest.updated_at,
       draft: mergeRequest.draft === true || mergeRequest.work_in_progress === true,
@@ -195,6 +207,7 @@ export function mapGitLabMyWorkTodos(todos: readonly GitLabTodo[]): MyWorkSource
       sourceBranch: todo.target.source_branch ?? "",
       targetBranch: todo.target.target_branch ?? "",
       author: todo.target.author?.username ?? todo.target.author?.name ?? todo.author?.username ?? todo.author?.name ?? "GitLab user",
+      reviewers: mapGitLabReviewers(todo.target.reviewers),
       webUrl: todo.target_url,
       updatedAt: todo.target.updated_at ?? todo.created_at,
       draft: todo.target.draft === true || todo.target.work_in_progress === true,
@@ -227,6 +240,29 @@ function todoRoles(actionName: string | undefined): MyWorkSourceItem["roles"] {
     case "review-requested": return ["reviewer"];
     default: return [];
   }
+}
+
+export function mapGitLabReviewers(reviewers: readonly GitLabUserSummary[] | undefined): ReviewUser[] {
+  const seen = new Set<string>();
+  return (reviewers ?? []).flatMap((reviewer) => {
+    const username = nonEmpty(reviewer.username);
+    const name = nonEmpty(reviewer.name) ?? username;
+    if (!name) return [];
+
+    const key = reviewer.id === undefined
+      ? username?.toLowerCase() ?? name.toLowerCase()
+      : String(reviewer.id);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const mapped: ReviewUser = { name };
+    if (reviewer.id !== undefined) mapped.id = String(reviewer.id);
+    if (username) mapped.username = username;
+    const avatarUrl = nonEmpty(reviewer.avatar_url);
+    if (avatarUrl) mapped.avatarUrl = avatarUrl;
+    const webUrl = nonEmpty(reviewer.web_url);
+    if (webUrl) mapped.webUrl = webUrl;
+    return [mapped];
+  });
 }
 
 export function mapGitLabCommits(commits: readonly GitLabCommit[]): ReviewCommit[] {

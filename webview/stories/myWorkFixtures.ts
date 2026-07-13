@@ -20,6 +20,10 @@ export function mergeRequest(overrides: Partial<MyWorkMergeRequest> = {}): MyWor
     sourceBranch: "feature/review-workspace",
     targetBranch: "main",
     author: "otataker",
+    reviewers: [
+      { id: "reviewer-1", username: "reviewer-one", name: "Reviewer One" },
+      { id: "reviewer-2", username: "reviewer-two", name: "Reviewer Two" }
+    ],
     updatedAt: minutesAgo(18),
     draft: false,
     roles: ["reviewer"],

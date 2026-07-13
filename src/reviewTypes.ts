@@ -10,6 +10,14 @@ export interface ReviewComment {
   pending?: boolean;
 }
 
+export interface ReviewUser {
+  id?: string;
+  username?: string;
+  name: string;
+  avatarUrl?: string;
+  webUrl?: string;
+}
+
 export interface ReviewThread {
   id: string;
   filePath?: string;
@@ -48,6 +56,7 @@ export interface ReviewState {
   sourceBranch: string;
   targetBranch: string;
   author: string;
+  reviewers: ReviewUser[];
   commits: ReviewCommit[];
   files: ReviewFile[];
   threads: ReviewThread[];
@@ -84,6 +93,7 @@ export interface ReviewOverview {
   sourceBranch: string;
   targetBranch: string;
   author: string;
+  reviewers: ReviewUser[];
   commits: ReviewCommit[];
   files: FileSummary[];
   threads: ReviewThread[];
