@@ -3,6 +3,7 @@ import { computed } from "vue";
 import type { MyWorkItem, MyWorkMergeRequest } from "../../src/myWorkTypes";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlIcon from "../common/components/GlIcon.vue";
+import GlReviewerList from "../common/components/GlReviewerList.vue";
 
 const props = defineProps<{ item: MyWorkItem }>();
 defineEmits<{ openMr: [item: MyWorkMergeRequest] }>();
@@ -75,6 +76,7 @@ function relativeTime(value?: string): string {
       <GlIcon name="arrow-right" :size="11" />
       <code class="gl-truncate">{{ mr.targetBranch }}</code>
     </span>
+    <GlReviewerList :reviewers="mr.reviewers" compact />
   </button>
 </template>
 

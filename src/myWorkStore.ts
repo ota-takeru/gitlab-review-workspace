@@ -167,7 +167,7 @@ function toState(phase: MyWorkState["phase"], items: readonly MyWorkItem[], fail
 
 function cloneItem(item: MyWorkItem): MyWorkItem {
   return item.kind === "merge-request"
-    ? { ...item, roles: [...item.roles], attentionReasons: [...item.attentionReasons] }
+    ? { ...item, reviewers: [...(item.reviewers ?? [])], roles: [...item.roles], attentionReasons: [...item.attentionReasons] }
     : { ...item };
 }
 

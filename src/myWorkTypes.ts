@@ -1,4 +1,4 @@
-import type { MergeRequestState } from "./reviewTypes";
+import type { MergeRequestState, ReviewUser } from "./reviewTypes";
 
 export type MyWorkSource = "todo" | "assigned_to_me" | "reviews_for_me" | "created_by_me" | "candidates";
 export type MyWorkRole = "author" | "assignee" | "reviewer";
@@ -20,6 +20,7 @@ export interface MyWorkSourceItem {
   sourceBranch: string;
   targetBranch: string;
   author: string;
+  reviewers: ReviewUser[];
   webUrl?: string;
   updatedAt?: string;
   projectPath: string;

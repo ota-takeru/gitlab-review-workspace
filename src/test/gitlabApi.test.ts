@@ -141,6 +141,7 @@ test("updateComment sends a PUT to the discussion note endpoint", async () => {
         sourceBranch: "source",
         targetBranch: "main",
         author: "me",
+        reviewers: [],
         commits: [],
         files: [],
         threads: []
@@ -284,6 +285,10 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
             state: "opened",
             source_branch: "feature",
             target_branch: "main",
+            reviewers: [
+              { id: 8, username: "reviewer-one", name: "Reviewer One" },
+              { id: 9, username: "reviewer-two", name: "Reviewer Two" }
+            ],
             diff_refs: { base_sha: "base", start_sha: "start", head_sha: "head" }
           })
         };
@@ -314,6 +319,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
     );
     assert.equal(state.threads[0].comments[0].canEdit, false);
     assert.deepEqual(state.commits, [fallbackCommit]);
+    assert.deepEqual(state.reviewers.map((reviewer) => reviewer.username), ["reviewer-one", "reviewer-two"]);
   } finally {
     if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
   }

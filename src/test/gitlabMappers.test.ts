@@ -159,6 +159,10 @@ test("mapGitLabMyWorkMergeRequests creates the UI-facing source item", () => {
     source_branch: "feature/work",
     target_branch: "main",
     author: { username: "author" },
+    reviewers: [
+      { id: 8, username: "reviewer-one", name: "Reviewer One", avatar_url: "https://gitlab.example.com/avatars/one.png" },
+      { id: 9, username: "reviewer-two", name: "Reviewer Two" }
+    ],
     web_url: "https://gitlab.example.com/group/project/-/merge_requests/12",
     updated_at: "2026-07-11T00:00:00Z",
     draft: true
@@ -172,6 +176,10 @@ test("mapGitLabMyWorkMergeRequests creates the UI-facing source item", () => {
     sourceBranch: "feature/work",
     targetBranch: "main",
     author: "author",
+    reviewers: [
+      { id: "8", username: "reviewer-one", name: "Reviewer One", avatarUrl: "https://gitlab.example.com/avatars/one.png" },
+      { id: "9", username: "reviewer-two", name: "Reviewer Two" }
+    ],
     webUrl: "https://gitlab.example.com/group/project/-/merge_requests/12",
     updatedAt: "2026-07-11T00:00:00Z",
     draft: true,
