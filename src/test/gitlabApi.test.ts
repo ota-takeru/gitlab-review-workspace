@@ -194,7 +194,7 @@ test("listMergeRequestCommits requests the paginated MR commits endpoint", async
       "projects/group%2Fproject/merge_requests/14/commits?per_page=100",
       "--paginate",
       "--output",
-      "json"
+      "ndjson"
     ]);
     assert.equal(commits[0].shortId, "abcdef12");
   } finally {
@@ -222,7 +222,7 @@ test("loadCommitDiff requests the encoded paginated commit diff endpoint", async
       "projects/group%2Fproject/repository/commits/sha%2Fwith%20space/diff?per_page=100",
       "--paginate",
       "--output",
-      "json"
+      "ndjson"
     ]);
     assert.equal(files[0].path, "a.ts");
   } finally {
@@ -299,7 +299,10 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
         receivedDiscussionArgs.push(args);
         return {
           ok: true,
-          stdout: JSON.stringify([{ id: "discussion", notes: [{ id: 8, body: "mine?", author: { id: 9 } }] }])
+          stdout: [
+            JSON.stringify([{ id: "discussion-1", notes: [{ id: 8, body: "first page", author: { id: 9 } }] }]),
+            JSON.stringify([{ id: "discussion-2", notes: [{ id: 9, body: "second page", author: { id: 10 } }] }])
+          ].join("\n")
         };
       }
       return { ok: false, stdout: "" };
@@ -319,6 +322,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
       { projectId: "1", iid: 2 },
       [fallbackCommit]
     );
+    assert.deepEqual(state.threads.map((thread) => thread.id), ["discussion-1", "discussion-2"]);
     assert.equal(state.threads[0].comments[0].canEdit, false);
     assert.deepEqual(state.commits, [fallbackCommit]);
     assert.deepEqual(state.reviewers.map((reviewer) => reviewer.username), ["reviewer-one", "reviewer-two"]);
@@ -329,7 +333,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
       "projects/1/merge_requests/2/discussions?per_page=100",
       "--paginate",
       "--output",
-      "json"
+      "ndjson"
     ]);
   } finally {
     if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);

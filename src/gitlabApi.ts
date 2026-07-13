@@ -430,14 +430,14 @@ export class GitLabReviewClient {
       endpoint,
       "--paginate",
       "--output",
-      "json"
+      "ndjson"
     ]);
     if (!result.ok) {
       throw new Error("GitLab API request failed.");
     }
 
     try {
-      return JSON.parse(result.stdout) as T;
+      return parsePaginatedJson<T>(result.stdout);
     } catch {
       throw new Error("GitLab returned an unexpected response.");
     }
@@ -491,4 +491,18 @@ export function toMergeRequestOption(mergeRequest: GitLabMergeRequest): MergeReq
 
 function projectSegment(projectId: string): string {
   return encodeURIComponent(projectId);
+}
+
+function parsePaginatedJson<T>(stdout: string): T {
+  const values = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as unknown);
+
+  if (values.length === 1 && Array.isArray(values[0])) {
+    return values[0] as T;
+  }
+
+  return values.flatMap((value) => Array.isArray(value) ? value : [value]) as T;
 }
