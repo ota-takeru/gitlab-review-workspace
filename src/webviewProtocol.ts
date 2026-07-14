@@ -6,6 +6,7 @@ import type {
   RepositoryTreeEntry,
   ReviewCommit,
   ReviewOverview,
+  ReviewSubmissionMode,
   ReviewThread
 } from "./reviewTypes";
 import type { LocalWorkspaceState } from "./localGitTypes";
@@ -78,7 +79,9 @@ export type SidebarMessage =
   | { type: "openBranchFile"; branch: string; filePath: string }
   | { type: "openCommitFile"; commitId: string; filePath: string }
   | { type: "addComment"; threadId: string; body: string }
-  | { type: "addOverviewThread"; body: string }
+  | { type: "addOverviewThread"; body: string; mode: ReviewSubmissionMode }
+  | { type: "publishReviewDraft"; draftId: string }
+  | { type: "submitReview" }
   | { type: "editComment"; threadId: string; commentId: string; body: string }
   | { type: "toggleResolved"; threadId: string }
   | { type: "setThreadExpanded"; threadId: string; expanded: boolean }

@@ -11,7 +11,7 @@ import {
   threadContentId
 } from "../../src/webviewViewModels";
 import type { MyWorkMergeRequest } from "../../src/myWorkTypes";
-import type { ReviewComment, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
+import type { ReviewComment, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
 import type { HostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlAvatar from "../common/components/GlAvatar.vue";
@@ -25,6 +25,7 @@ import GlIconButton from "../common/components/GlIconButton.vue";
 import GlMarkdown from "../common/components/GlMarkdown.vue";
 import GlSection from "../common/components/GlSection.vue";
 import GlStatusBadge from "../common/components/GlStatusBadge.vue";
+import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
 import GlReviewerList from "../common/components/GlReviewerList.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
 import { vscode } from "../common/vscode";
@@ -42,6 +43,7 @@ interface UiState {
   editingComments?: Record<string, boolean>;
   collapsedThreads?: Record<string, boolean>;
   overviewThreadDrafts?: Record<string, string>;
+  overviewThreadModes?: Record<string, ReviewSubmissionMode>;
   myWorkScrollTop?: number;
 }
 
@@ -57,6 +59,7 @@ const editDrafts = reactive<Record<string, string>>(saved.editDrafts ?? {});
 const editingComments = reactive<Record<string, boolean>>(saved.editingComments ?? {});
 const collapsedThreads = reactive<Record<string, boolean>>(saved.collapsedThreads ?? {});
 const overviewThreadDrafts = reactive<Record<string, string>>(saved.overviewThreadDrafts ?? {});
+const overviewThreadModes = reactive<Record<string, ReviewSubmissionMode>>(saved.overviewThreadModes ?? {});
 const resolvedByThread = new Map<string, boolean>();
 const requestedThreadDetails = new Set<string>();
 let loadedMrKey = "";
@@ -77,6 +80,8 @@ const overviewThreadDraft = computed({
     if (mrKey.value) overviewThreadDrafts[mrKey.value] = value;
   }
 });
+const overviewThreadMode = computed<ReviewSubmissionMode>(() => overviewThreadModes[mrKey.value] ?? "comment");
+const reviewSubmissionPending = computed(() => overview.value?.draftNotes.some((draft) => draft.pending) ?? false);
 const commentProjectId = computed(() => overview.value?.selectedMergeRequest?.projectId);
 const filteredCommits = computed(() => {
   const commits = overview.value?.commits ?? [];
@@ -150,6 +155,7 @@ function persist(): void {
     editingComments: { ...editingComments },
     collapsedThreads: { ...collapsedThreads },
     overviewThreadDrafts: { ...overviewThreadDrafts },
+    overviewThreadModes: { ...overviewThreadModes },
     myWorkScrollTop: myWorkScrollTop.value
   });
 }
@@ -199,8 +205,14 @@ function sendReply(threadId: string): void {
 function addOverviewThread(): void {
   const body = overviewThreadDraft.value;
   if (!body.trim()) return;
-  post({ type: "addOverviewThread", body });
+  post({ type: "addOverviewThread", body, mode: overviewThreadMode.value });
   delete overviewThreadDrafts[mrKey.value];
+  delete overviewThreadModes[mrKey.value];
+  persist();
+}
+function setOverviewThreadMode(mode: ReviewSubmissionMode): void {
+  if (!mrKey.value) return;
+  overviewThreadModes[mrKey.value] = mode;
   persist();
 }
 function openThread(thread: ReviewThreadSummary): void {
@@ -623,17 +635,69 @@ onBeforeUnmount(() => {
           </select>
         </template>
 
-        <GlCommentForm
-          v-model="overviewThreadDraft"
-          class="new-thread-form"
-          aria-label="Add review thread"
-          placeholder="Add a review comment…"
-          submit-label="Add review"
-          compact
-          :project-id="commentProjectId"
-          @update:model-value="persist"
-          @submit="addOverviewThread"
-        />
+        <div class="new-thread-composer">
+          <div class="submission-mode-row">
+            <span class="submission-mode-label">Post as</span>
+            <div class="submission-mode" role="group" aria-label="Choose comment or review">
+              <button
+                type="button"
+                aria-label="Post as comment"
+                :aria-pressed="overviewThreadMode === 'comment'"
+                title="Post immediately as a comment"
+                @click="setOverviewThreadMode('comment')"
+              >Comment</button>
+              <button
+                type="button"
+                aria-label="Post as review"
+                :aria-pressed="overviewThreadMode === 'review'"
+                title="Keep pending until you submit the review"
+                @click="setOverviewThreadMode('review')"
+              >Review</button>
+            </div>
+            <span class="submission-mode-help">
+              {{ overviewThreadMode === "comment" ? "Posts immediately" : "Stays pending until review submission" }}
+            </span>
+          </div>
+          <GlCommentForm
+            v-model="overviewThreadDraft"
+            class="new-thread-form"
+            aria-label="Add review thread"
+            :placeholder="overviewThreadMode === 'comment' ? 'Add a comment…' : 'Add to your review…'"
+            :submit-label="overviewThreadMode === 'comment' ? 'Comment' : 'Add to review'"
+            compact
+            :project-id="commentProjectId"
+            @update:model-value="persist"
+            @submit="addOverviewThread"
+          />
+        </div>
+
+        <section v-if="overview.draftNotes.length" class="pending-review" aria-label="Pending review">
+          <header class="pending-review-header">
+            <span class="pending-review-title">
+              <GlBadge tone="warning" pill>Pending review</GlBadge>
+              <span>{{ overview.draftNotes.length }} comment{{ overview.draftNotes.length === 1 ? "" : "s" }}</span>
+            </span>
+            <GlButton
+              variant="confirm"
+              size="small"
+              :loading="reviewSubmissionPending"
+              @click="post({ type: 'submitReview' })"
+            >Submit review</GlButton>
+          </header>
+          <article v-for="draft in overview.draftNotes" :key="draft.id" class="pending-review-note">
+            <header>
+              <span class="pending-review-location">{{ draft.filePath ? `${draft.filePath}${draft.line ? `:${draft.line}` : ""}` : "MR overview" }}</span>
+              <GlButton
+                variant="link"
+                size="small"
+                :loading="draft.pending"
+                :disabled="reviewSubmissionPending && !draft.pending"
+                @click="post({ type: 'publishReviewDraft', draftId: draft.id })"
+              >Post as comment</GlButton>
+            </header>
+            <GlMarkdown :source="draft.body" :project-id="commentProjectId" />
+          </article>
+        </section>
 
         <div class="thread-list">
           <article
@@ -652,7 +716,6 @@ onBeforeUnmount(() => {
                 @click="toggleThread(thread)"
               >
                 <GlIcon name="chevron-right" :size="12" />
-                <GlStatusBadge :status="thread.resolved ? 'resolved' : 'open'">{{ thread.resolved ? "Resolved" : "Open" }}</GlStatusBadge>
                 <GlAvatarGroup
                   v-if="thread.authors.length"
                   :items="thread.authors"
@@ -672,6 +735,12 @@ onBeforeUnmount(() => {
                 </span>
               </button>
               <span class="thread-actions">
+                <GlThreadStatusAction
+                  :resolved="thread.resolved"
+                  :pending="thread.pending"
+                  :resolvable="thread.resolvable !== false"
+                  @toggle="post({ type: 'toggleResolved', threadId: thread.id })"
+                />
                 <GlButton
                   v-if="thread.filePath"
                   class="view-diff-action"
@@ -725,14 +794,6 @@ onBeforeUnmount(() => {
                 @update:model-value="value => { replyDrafts[thread.id] = value; persist(); }"
                 @submit="sendReply(thread.id)"
               />
-              <footer v-if="thread.resolvable !== false" class="thread-lifecycle-actions">
-                <GlButton
-                  size="small"
-                  :icon="thread.resolved ? 'retry' : 'check-circle'"
-                  :loading="thread.pending"
-                  @click="post({ type: 'toggleResolved', threadId: thread.id })"
-                >{{ thread.pending ? "Updating…" : thread.resolved ? "Reopen thread" : "Resolve thread" }}</GlButton>
-              </footer>
             </div>
           </article>
         </div>
@@ -904,7 +965,23 @@ onBeforeUnmount(() => {
 .open-count { color: var(--gl-text-subtle); font-size: 10px; }
 select { min-height: 24px; border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); color: var(--vscode-dropdown-foreground, var(--gl-text-default)); background: var(--vscode-dropdown-background, var(--gl-surface-raised)); }
 .thread-list { min-width: 0; display: grid; gap: var(--gl-spacing-8); }
-.new-thread-form { margin-bottom: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); }
+.new-thread-composer { min-width: 0; margin-bottom: var(--gl-spacing-8); }
+.submission-mode-row { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-8); margin-bottom: var(--gl-spacing-4); }
+.submission-mode-label { flex: none; color: var(--gl-text-subtle); font-size: 10px; }
+.submission-mode { flex: none; display: inline-flex; overflow: hidden; border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); }
+.submission-mode button { min-height: 24px; padding: var(--gl-spacing-2) var(--gl-spacing-8); border: 0; border-right: 1px solid var(--gl-border-default); color: var(--gl-text-subtle); background: var(--gl-surface-raised); font-size: 10px; cursor: pointer; }
+.submission-mode button:last-child { border-right: 0; }
+.submission-mode button:hover { color: var(--gl-text-default); background: var(--gl-hover-surface); }
+.submission-mode button[aria-pressed="true"] { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, var(--gl-feedback-brand)); }
+.submission-mode-help { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.new-thread-form { border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); }
+.pending-review { min-width: 0; display: grid; gap: var(--gl-spacing-4); margin-bottom: var(--gl-spacing-8); padding: var(--gl-spacing-8); border: 1px solid color-mix(in srgb, var(--gl-feedback-warning) 40%, var(--gl-border-default)); border-radius: var(--gl-radius-md); background: var(--gl-feedback-warning-subtle); }
+.pending-review-header, .pending-review-note > header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--gl-spacing-8); }
+.pending-review-title { min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 10px; }
+.pending-review-note { min-width: 0; padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-subtle); border-radius: var(--gl-radius-sm); background: var(--gl-surface-raised); }
+.pending-review-location { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font: 9px var(--vscode-editor-font-family); text-overflow: ellipsis; white-space: nowrap; }
+.pending-review-note :deep(.gl-markdown) { margin-top: var(--gl-spacing-4); }
+.pending-review :deep(.gl-button) { white-space: nowrap; }
 .commit-section .collapsible-section-title > .gl-icon { color: var(--gl-commit-accent); }
 .thread-section :deep(.gl-section-title > .gl-icon) { color: var(--gl-thread-accent); }
 .thread {
@@ -966,7 +1043,6 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .comment-edit-action:hover:not(:disabled) { color: var(--gl-thread-accent); }
 .thread-actions { display: inline-flex; align-items: center; gap: var(--gl-spacing-2); white-space: nowrap; }
 .thread-content { min-width: 0; }
-.thread-lifecycle-actions { display: flex; justify-content: flex-end; padding: var(--gl-spacing-8); border-top: 1px solid var(--gl-border-subtle); background: var(--gl-surface-subtle); }
 
 @media (max-width: 480px) {
   .thread-header { gap: var(--gl-spacing-2); padding-inline: var(--gl-spacing-2); }
@@ -977,5 +1053,9 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 @media (max-width: 360px) {
   .commit-row { grid-template-columns: 8px 48px minmax(0, 1fr) auto 16px; }
   .commit-author { display: none; }
+  .submission-mode-help { display: none; }
+  .pending-review-header { flex-wrap: wrap; }
+  .pending-review-title { flex-basis: 100%; justify-content: space-between; }
+  .pending-review-header > :deep(.gl-button) { margin-left: auto; }
 }
 </style>

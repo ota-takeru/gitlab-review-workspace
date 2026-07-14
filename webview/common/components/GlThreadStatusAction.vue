@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import GlIcon from "./GlIcon.vue";
 
 const props = withDefaults(defineProps<{
@@ -7,6 +8,7 @@ const props = withDefaults(defineProps<{
   resolvable?: boolean;
 }>(), { pending: false, resolvable: true });
 const emit = defineEmits<{ toggle: [] }>();
+const showNextState = ref(false);
 
 function activate(): void {
   if (!props.pending && props.resolvable) emit("toggle");
@@ -20,17 +22,19 @@ function activate(): void {
     type="button"
     :disabled="pending || !resolvable"
     :aria-label="pending ? 'Updating discussion status' : resolvable ? `${resolved ? 'Reopen' : 'Resolve'} discussion` : `${resolved ? 'Resolved' : 'Open'} discussion`"
+    @mouseenter="showNextState = true"
+    @mouseleave="showNextState = false"
+    @focus="showNextState = true"
+    @blur="showNextState = false"
     @click.stop="activate"
   >
     <span v-if="pending" class="status-label"><GlIcon class="spin" name="spinner" :size="12" />Updating</span>
-    <template v-else>
-      <span class="status-label current-status">
-        <GlIcon :name="resolved ? 'check-circle' : 'comments'" :size="12" />{{ resolved ? "Resolved" : "Open" }}
-      </span>
-      <span v-if="resolvable" class="status-label status-action">
-        <GlIcon :name="resolved ? 'retry' : 'check-circle'" :size="12" />{{ resolved ? "Reopen" : "Resolve" }}
-      </span>
-    </template>
+    <span v-else class="status-label">
+      <GlIcon
+        :name="showNextState && resolvable ? resolved ? 'retry' : 'check-circle' : resolved ? 'check-circle' : 'comments'"
+        :size="12"
+      />{{ showNextState && resolvable ? resolved ? "Reopen" : "Resolve" : resolved ? "Resolved" : "Open" }}
+    </span>
   </button>
 </template>
 
@@ -68,11 +72,6 @@ function activate(): void {
   color: var(--gl-resolved-accent);
   background: color-mix(in srgb, var(--gl-resolved-accent) 10%, var(--gl-hover-surface));
 }
-.status-label { grid-area: 1 / 1; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); white-space: nowrap; }
-.status-action { visibility: hidden; }
-.has-action:hover .current-status,
-.has-action:focus-visible .current-status { visibility: hidden; }
-.has-action:hover .status-action,
-.has-action:focus-visible .status-action { visibility: visible; }
+.status-label { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); white-space: nowrap; }
 .thread-status-action:disabled { cursor: default; opacity: 1; }
 </style>
