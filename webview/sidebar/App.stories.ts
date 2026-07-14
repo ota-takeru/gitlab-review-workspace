@@ -92,7 +92,8 @@ const threadState: SidebarViewState = {
       resolvable: true,
       commentCount: 1,
       authors: [{ name: "reviewer" }],
-      lastComment: { author: "reviewer", createdAt: "2026-07-13T10:00:00.000Z" }
+      lastComment: { author: "reviewer", createdAt: "2026-07-13T10:00:00.000Z" },
+      searchText: "reviewer\nCould we simplify this branch?"
     }],
     totalComments: 1,
     unresolvedThreads: 1,
@@ -194,6 +195,8 @@ export const DistinctStatusAndActions: Story = {
   play: async ({ canvasElement }) => {
     const thread = canvasElement.querySelector<HTMLElement>(".thread");
     await expect(thread).not.toBeNull();
+    await expect(thread!.querySelector(".thread-header .gl-avatar-group")).toBeNull();
+    await expect(thread!.querySelectorAll(".thread-content .gl-avatar")).toHaveLength(1);
     const canvas = within(thread!);
     await expect(canvas.getByText("Open", { exact: true })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Go to diff for src/review.ts at line 42" })).toBeVisible();
@@ -202,6 +205,23 @@ export const DistinctStatusAndActions: Story = {
     await expect(canvas.getByText("Resolve", { exact: true })).toBeVisible();
     await userEvent.unhover(status);
     await expect(canvas.getByText("Open", { exact: true })).toBeVisible();
+  }
+};
+
+export const SearchReviewComments: Story = {
+  render: () => renderState({ ...threadState, threadDetails: [] }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const search = canvas.getByRole("searchbox", { name: "Search reviews in this merge request" });
+    await userEvent.type(search, "simplify");
+    await expect(canvas.getByText("1 of 1 threads")).toBeVisible();
+    await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
+    await userEvent.clear(search);
+    await userEvent.type(search, "missing text");
+    await expect(canvas.getByText("No review comments found")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Clear review search" }));
+    await expect(search).toHaveValue("");
+    await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
   }
 };
 

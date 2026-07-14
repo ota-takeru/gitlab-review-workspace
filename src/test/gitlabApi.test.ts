@@ -347,6 +347,77 @@ test("loadCommitDiff requests the encoded paginated commit diff endpoint", async
   }
 });
 
+test("compareCommits requests a straight comparison and maps changed files", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  let receivedArgs: string[] | undefined;
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      receivedArgs = args;
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          diffs: [{
+            old_path: "src/old.ts",
+            new_path: "src/new.ts",
+            diff: "@@ -1 +1 @@\n-old\n+new",
+            new_file: false,
+            deleted_file: false,
+            renamed_file: true
+          }]
+        })
+      };
+    }
+  });
+
+  try {
+    const files = await new GitLabReviewClient("gitlab.example.com").compareCommits(
+      "group/project",
+      "old sha",
+      "new/sha"
+    );
+    assert.equal(files[0]?.path, "src/new.ts");
+    assert.deepEqual(receivedArgs, [
+      "api",
+      "--hostname",
+      "gitlab.example.com",
+      "projects/group%2Fproject/repository/compare?from=old%20sha&to=new%2Fsha&straight=true",
+      "--output",
+      "json"
+    ]);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
+test("loadComparisonFileContents reads the selected comparison endpoints", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  const endpoints: string[] = [];
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      endpoints.push(args[3] ?? "");
+      return { ok: true, stdout: args[3]?.includes("ref=old") ? "before\n" : "after\n" };
+    }
+  });
+
+  try {
+    const contents = await new GitLabReviewClient("gitlab.example.com").loadComparisonFileContents(
+      "group/project",
+      "old",
+      "new",
+      { oldPath: "src/file.ts", newPath: "src/file.ts", newFile: false, deletedFile: false }
+    );
+    assert.deepEqual(contents, { oldText: "before\n", newText: "after\n" });
+    assert.deepEqual(endpoints, [
+      "projects/group%2Fproject/repository/files/src%2Ffile.ts/raw?ref=old",
+      "projects/group%2Fproject/repository/files/src%2Ffile.ts/raw?ref=new"
+    ]);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
 test("loadCommitFileContents reads the parent and commit versions of a file", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   const receivedArgs: string[][] = [];

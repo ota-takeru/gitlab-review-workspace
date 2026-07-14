@@ -42,6 +42,7 @@ export interface ReviewThreadSummary {
   commentCount: number;
   authors: Array<{ id?: string; name: string; avatarUrl?: string }>;
   lastComment?: { author: string; createdAt: string };
+  searchText: string;
 }
 
 export type ReviewSubmissionMode = "comment" | "review";
@@ -155,6 +156,15 @@ export interface ReviewOverview {
   resolvedThreads: number;
   additions: number;
   deletions: number;
+  newChanges?: ReviewUpdateRange;
+}
+
+export interface ReviewUpdateRange {
+  projectId: string;
+  mergeRequestIid: number;
+  fromSha: string;
+  toSha: string;
+  commitCount: number;
 }
 
 export interface ReviewCommit {
@@ -191,6 +201,12 @@ export interface CommitFileContents {
 
 export interface CommitFileReviewContext {
   commit: ReviewCommit;
+  file: CommitDiffFile;
+  contents?: CommitFileContents;
+}
+
+export interface NewChangesFileReviewContext {
+  range: ReviewUpdateRange;
   file: CommitDiffFile;
   contents?: CommitFileContents;
 }

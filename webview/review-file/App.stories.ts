@@ -105,6 +105,36 @@ const sideBySideState: ReviewFileViewState = {
   }
 };
 
+const newChangesState: ReviewFileViewState = {
+  ...sideBySideState,
+  source: "new-changes",
+  newChanges: {
+    projectId: "101",
+    mergeRequestIid: 42,
+    fromSha: "1111111111111111111111111111111111111111",
+    toSha: "2222222222222222222222222222222222222222",
+    commitCount: 2,
+    selected: "new",
+    loading: false,
+    fileChanged: true
+  }
+};
+
+const noNewFileChangesState: ReviewFileViewState = {
+  ...state,
+  source: "review",
+  newChanges: {
+    projectId: "101",
+    mergeRequestIid: 42,
+    fromSha: "1111111111111111111111111111111111111111",
+    toSha: "2222222222222222222222222222222222222222",
+    commitCount: 2,
+    selected: "new",
+    loading: false,
+    fileChanged: false
+  }
+};
+
 const editState: ReviewFileViewState = {
   ...state,
   mode: "edit",
@@ -182,6 +212,26 @@ export const SideBySideDiff: Story = {
     await expect(canvas.getByText("Merge request")).toBeVisible();
     await expect(canvas.getByText("const answer = 41;")).toBeVisible();
     await expect(canvas.getByText("const answer = 42;")).toBeVisible();
+  }
+};
+
+export const NewChangesFromLatestPush: Story = {
+  render: () => renderState(newChangesState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("combobox", { name: "Merge request change range" })).toHaveValue("new");
+    await expect(canvas.getAllByText("Latest push", { exact: true })).toHaveLength(2);
+    await expect(canvas.getByText("New addition", { exact: true })).toBeVisible();
+    await expect(canvas.getByText("New deletion", { exact: true })).toBeVisible();
+  }
+};
+
+export const FileUnchangedInLatestPush: Story = {
+  render: () => renderState(noNewFileChangesState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("No new changes in this file")).toBeVisible();
+    await expect(canvas.getByText("Switch to All changes to view the complete merge request diff.")).toBeVisible();
   }
 };
 

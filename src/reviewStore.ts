@@ -6,11 +6,13 @@ import { buildReviewLines, buildReviewLinesFromPatch, countLineDiff, countPatchD
 import { editedTimestamp } from "./commentUtils";
 import { buildReviewLinesAsync, shouldBuildReviewLinesInWorker } from "./reviewDiffWorkerClient";
 import { ReviewThreadSortOrder, sortReviewThreads } from "./reviewTreeUtils";
+import { detectReviewUpdateRange } from "./reviewUpdateUtils";
 import {
   BranchFileContent,
   CommitDiffFile,
   CommitFileContents,
   CommitFileReviewContext,
+  NewChangesFileReviewContext,
   FileReviewViewModel,
   FileSummary,
   LocalEdit,
@@ -26,6 +28,7 @@ import {
   ReviewSubmissionMode,
   ReviewThread,
   ReviewThreadSummary,
+  ReviewUpdateRange,
   RepositoryTreeEntry
 } from "./reviewTypes";
 import type { MergeRequestWorkspaceAssociation } from "./localGitTypes";
@@ -39,7 +42,8 @@ export const REVIEW_CACHE_KEYS = {
   branchFiles: "gitlabReview.cache.branchFiles.v1",
   commitDiffs: "gitlabReview.cache.commitDiffs.v1",
   threadSortOrder: "gitlabReview.threadSortOrder.v1",
-  workspaceAssociations: "gitlabReview.workspaceAssociations.v1"
+  workspaceAssociations: "gitlabReview.workspaceAssociations.v1",
+  newChanges: "gitlabReview.newChanges.v1"
 } as const;
 
 const cacheLimits = {
@@ -108,6 +112,7 @@ export class ReviewStore {
   private readonly branchFileCacheTimes = new Map<string, number>();
   private readonly commitDiffCache = new Map<string, CommitDiffFile[]>();
   private readonly commitDiffCacheTimes = new Map<string, number>();
+  private newChanges?: ReviewUpdateRange;
   private readonly reviewFileContentCache = new Map<string, CachedReviewFileContents>();
   private readonly reviewFileContentLoads = new Map<string, Promise<ReviewFileContents>>();
   private readonly reviewFileContentErrors = new Map<string, { state: FileReviewViewModel["fullFileState"]; message: string }>();
@@ -162,6 +167,12 @@ export class ReviewStore {
       this.context.workspaceState.get<LocalEditsByMergeRequest>(REVIEW_CACHE_KEYS.localEdits) ?? {};
     this.workspaceAssociations =
       this.context.workspaceState.get<WorkspaceAssociations>(REVIEW_CACHE_KEYS.workspaceAssociations) ?? {};
+    const cachedNewChanges = this.context.workspaceState.get<ReviewUpdateRange>(REVIEW_CACHE_KEYS.newChanges);
+    this.newChanges = cachedNewChanges && this.state?.diffRefs?.headSha === cachedNewChanges.toSha
+      && this.state.projectId === cachedNewChanges.projectId
+      && this.state.mergeRequestIid === cachedNewChanges.mergeRequestIid
+      ? cachedNewChanges
+      : undefined;
     this.hydrateMap(
       this.branchTreeCache,
       this.branchTreeCacheTimes,
@@ -216,7 +227,8 @@ export class ReviewStore {
       unresolvedThreads,
       resolvedThreads,
       additions,
-      deletions
+      deletions,
+      newChanges: this.newChanges
     };
     this.overviewCache = { revision: this.overviewRevision, value };
     return value;
@@ -226,6 +238,10 @@ export class ReviewStore {
     if (!this.state || threadIds.length === 0) return [];
     const requested = new Set(threadIds);
     return this.state.threads.filter((thread) => requested.has(thread.id));
+  }
+
+  getNewChanges(): ReviewUpdateRange | undefined {
+    return this.newChanges;
   }
 
   getWorkspaceAssociation(projectId: string, mergeRequestIid: number): MergeRequestWorkspaceAssociation | undefined {
@@ -380,6 +396,7 @@ export class ReviewStore {
             : [];
           const loadedState = await client.loadMergeRequest(reference, fallbackCommits, previousState?.draftNotes ?? []);
           if (generation !== this.refreshGeneration) return;
+          this.updateNewChanges(previousState, loadedState);
           this.state = loadedState;
           this.lastLoadedReference = reference;
           this.cacheReviewState(this.state);
@@ -420,6 +437,9 @@ export class ReviewStore {
       : this.getCachedReviewState(nextReference);
     if (this.state) this.cacheReviewState(this.state);
     this.state = undefined;
+    if (this.newChanges && (this.newChanges.projectId !== projectId || this.newChanges.mergeRequestIid !== iid)) {
+      this.setNewChanges(undefined);
+    }
     this.lastLoadedReference = undefined;
     this.loadState = "loading";
     this.errorMessage = undefined;
@@ -525,6 +545,69 @@ export class ReviewStore {
     const file = files.find((candidate) => candidate.path === filePath);
     if (!file) throw new Error("The file is not part of the selected commit.");
     return { commit, file };
+  }
+
+  async loadNewChangesFileReviewContext(filePath: string): Promise<NewChangesFileReviewContext | undefined> {
+    const review = this.state;
+    const range = this.newChanges;
+    if (!review || !range || review.projectId !== range.projectId || review.diffRefs?.headSha !== range.toSha) {
+      return undefined;
+    }
+    const cacheKey = `compare:${review.projectId}:${range.fromSha}:${range.toSha}`;
+    let files = this.commitDiffCache.get(cacheKey);
+    if (!files) {
+      files = await this.getClient().compareCommits(review.projectId, range.fromSha, range.toSha);
+      this.setLimitedCache(
+        this.commitDiffCache,
+        this.commitDiffCacheTimes,
+        cacheKey,
+        files,
+        cacheLimits.commitDiffs
+      );
+      this.trimCommitDiffCharacters();
+      this.persistCommitDiffCache();
+    }
+    const file = files.find((candidate) => candidate.path === filePath || candidate.oldPath === filePath || candidate.newPath === filePath);
+    return file ? { range, file } : undefined;
+  }
+
+  async loadNewChangesFileContents(context: NewChangesFileReviewContext): Promise<CommitFileContents> {
+    const review = this.state;
+    if (!review || this.newChanges?.fromSha !== context.range.fromSha || this.newChanges.toSha !== context.range.toSha) {
+      throw new Error("The new changes comparison is no longer current.");
+    }
+    const contents = await this.getClient().loadComparisonFileContents(
+      review.projectId,
+      context.range.fromSha,
+      context.range.toSha,
+      context.file
+    );
+    const threads = this.getThreadsForFile(context.file.path);
+    const threadLayout = threads
+      .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
+      .join("|");
+    const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
+    this.cacheReviewLines(`commit:compare:${context.range.fromSha}:${context.range.toSha}:${context.file.path}:full:${threadLayout}`, lines);
+    context.contents = contents;
+    return contents;
+  }
+
+  buildNewChangesFileViewModel(
+    context: NewChangesFileReviewContext,
+    options: ReviewFileViewOptions = {}
+  ): FileReviewViewModel {
+    return this.buildCommitFileViewModel({
+      commit: {
+        id: `compare:${context.range.fromSha}:${context.range.toSha}`,
+        shortId: context.range.toSha.slice(0, 8),
+        title: "New changes",
+        authorName: "",
+        authoredAt: "",
+        committedAt: ""
+      },
+      file: context.file,
+      contents: context.contents
+    }, options);
   }
 
   buildCommitFileViewModel(
@@ -1029,6 +1112,26 @@ export class ReviewStore {
     return `${reviewFileContentKey(review, file)}:${hasContents ? "full" : `patch:${file.patch?.length ?? 0}`}:${localEdit?.updatedAt ?? ""}:${threadLayout}`;
   }
 
+  private updateNewChanges(previous: ReviewState | undefined, current: ReviewState): void {
+    const detected = detectReviewUpdateRange(previous, current);
+    if (detected) {
+      this.setNewChanges(detected);
+      return;
+    }
+    if (this.newChanges && (
+      this.newChanges.projectId !== current.projectId
+      || this.newChanges.mergeRequestIid !== current.mergeRequestIid
+      || this.newChanges.toSha !== current.diffRefs?.headSha
+    )) {
+      this.setNewChanges(undefined);
+    }
+  }
+
+  private setNewChanges(value: ReviewUpdateRange | undefined): void {
+    this.newChanges = value;
+    this.persistBestEffort(REVIEW_CACHE_KEYS.newChanges, value);
+  }
+
   private emitChange(): void {
     this.overviewRevision += 1;
     this.overviewCache = undefined;
@@ -1331,7 +1434,8 @@ function toReviewThreadSummary(thread: ReviewThread): ReviewThreadSummary {
     pending: thread.pending,
     commentCount: thread.comments.length,
     authors: [...authors.values()],
-    lastComment: last ? { author: last.author, createdAt: last.createdAt } : undefined
+    lastComment: last ? { author: last.author, createdAt: last.createdAt } : undefined,
+    searchText: thread.comments.map((comment) => `${comment.author}\n${comment.body}`).join("\n")
   };
 }
 

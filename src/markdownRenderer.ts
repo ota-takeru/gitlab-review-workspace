@@ -68,15 +68,23 @@ export function renderMarkdown(source: string): string {
 }
 
 function renderInline(source: string): string {
-  const escaped = escapeHtml(source);
   const codeTokens: string[] = [];
+  const escapeTokens: string[] = [];
   const imageTokens: string[] = [];
-  const withCodeTokens = escaped.replace(/`([^`\n]+)`/g, (_match, code: string) => {
+  const withCodeTokens = source.replace(/`([^`\n]+)`/g, (_match, code: string) => {
     const token = `\u0000CODE${codeTokens.length}\u0000`;
-    codeTokens.push(`<code>${code}</code>`);
+    codeTokens.push(`<code>${escapeHtml(code)}</code>`);
     return token;
   });
-  const withImages = withCodeTokens.replace(
+  const withEscapeTokens = withCodeTokens.replace(
+    /\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g,
+    (_match, character: string) => {
+      const token = `\u0000ESCAPE${escapeTokens.length}\u0000`;
+      escapeTokens.push(escapeHtml(character));
+      return token;
+    }
+  );
+  const withImages = escapeHtml(withEscapeTokens).replace(
     /!\[((?:\\.|[^\]\\\n])*)\]\(((?:(?:https:\/\/|\/uploads\/)[^\s)]+|data:image\/(?:png|jpe?g|gif|webp);base64,[^\s)]+))\)/gi,
     (_match, alt: string, src: string) => {
       if (!isSafeImageUrl(src)) return unescapeMarkdownAlt(alt);
@@ -105,7 +113,8 @@ function renderInline(source: string): string {
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
   return formatted
     .replace(/\u0000CODE(\d+)\u0000/g, (_match, index: string) => codeTokens[Number(index)] ?? "")
-    .replace(/\u0000IMAGE(\d+)\u0000/g, (_match, index: string) => imageTokens[Number(index)] ?? "");
+    .replace(/\u0000IMAGE(\d+)\u0000/g, (_match, index: string) => imageTokens[Number(index)] ?? "")
+    .replace(/\u0000ESCAPE(\d+)\u0000/g, (_match, index: string) => escapeTokens[Number(index)] ?? "");
 }
 
 function escapeHtml(value: string): string {

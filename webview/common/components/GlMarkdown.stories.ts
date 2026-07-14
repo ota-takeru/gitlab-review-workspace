@@ -26,6 +26,15 @@ function renderPrivateMarkdown(args: Record<string, unknown>) {
   };
 }
 
+export const EscapedPunctuation: Story = {
+  args: { source: String.raw`\[メモ\] \*装飾しない\*` },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("[メモ] *装飾しない*", { exact: true })).toBeVisible();
+    await expect(canvas.queryByText(String.raw`\[メモ\]`)).toBeNull();
+  }
+};
+
 export const PrivateImageResolveAndLightbox: Story = {
   args: { source: "![Private review image](/uploads/story/private.png)" },
   render: renderPrivateMarkdown,

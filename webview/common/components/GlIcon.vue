@@ -29,6 +29,7 @@ import quote from "@gitlab/svgs/dist/sprite_icons/quote.svg";
 import remove from "@gitlab/svgs/dist/sprite_icons/remove.svg";
 import reply from "@gitlab/svgs/dist/sprite_icons/reply.svg";
 import retry from "@gitlab/svgs/dist/sprite_icons/retry.svg";
+import search from "@gitlab/svgs/dist/sprite_icons/search.svg";
 import spinner from "@gitlab/svgs/dist/sprite_icons/spinner.svg";
 import strikethrough from "@gitlab/svgs/dist/sprite_icons/strikethrough.svg";
 import warning from "@gitlab/svgs/dist/sprite_icons/warning.svg";
@@ -39,7 +40,7 @@ const icons = {
   "chevron-down": chevronDown, "chevron-right": chevronRight, "chevron-up": chevronUp, close, comment, comments,
   code, commit, "external-link": externalLink, file, "file-tree": fileTree, folder,
   information, italic, link, list, "list-numbered": listNumbered, notifications, "paper-airplane": paperAirplane, pencil,
-  quote, remove, reply, retry, spinner, strikethrough, upload, warning
+  quote, remove, reply, retry, search, spinner, strikethrough, upload, warning
 } as const;
 
 export type GlIconName = keyof typeof icons;
