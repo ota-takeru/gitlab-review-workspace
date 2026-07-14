@@ -233,6 +233,61 @@ test("createOverviewThread posts a positionless merge request discussion", async
   }
 });
 
+test("draft review methods create, publish, and bulk publish GitLab draft notes", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  const received: string[][] = [];
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      received.push(args);
+      return args.includes("note=Keep this pending.")
+        ? { ok: true, stdout: JSON.stringify({ id: 71, note: "Keep this pending." }) }
+        : { ok: true, stdout: "" };
+    }
+  });
+
+  try {
+    const client = new GitLabReviewClient("gitlab.example.com");
+    const review = {
+      id: "group/project!4",
+      projectId: "group/project",
+      mergeRequestIid: 4,
+      title: "MR",
+      state: "opened" as const,
+      sourceBranch: "source",
+      targetBranch: "main",
+      author: "me",
+      reviewers: [],
+      commits: [],
+      files: [],
+      threads: []
+    };
+
+    const draft = await client.createOverviewDraftNote(review, "Keep this pending.");
+    await client.publishDraftNote(review, "71/with space");
+    await client.publishAllDraftNotes(review);
+
+    assert.deepEqual(draft, { id: "71", body: "Keep this pending.", filePath: undefined, line: undefined });
+    assert.deepEqual(received, [
+      [
+        "api", "--hostname", "gitlab.example.com", "--method", "POST",
+        "projects/group%2Fproject/merge_requests/4/draft_notes",
+        "--raw-field", "note=Keep this pending.", "--output", "json"
+      ],
+      [
+        "api", "--hostname", "gitlab.example.com", "--method", "PUT",
+        "projects/group%2Fproject/merge_requests/4/draft_notes/71%2Fwith%20space/publish"
+      ],
+      [
+        "api", "--hostname", "gitlab.example.com", "--method", "POST",
+        "projects/group%2Fproject/merge_requests/4/draft_notes/bulk_publish"
+      ]
+    ]);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
 test("listMergeRequestCommits requests the paginated MR commits endpoint", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   let receivedArgs: string[] | undefined;
@@ -385,6 +440,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   const receivedDiscussionArgs: string[][] = [];
   const receivedDiffArgs: string[][] = [];
+  const receivedDraftArgs: string[][] = [];
   let rawFileRequests = 0;
   Object.defineProperty(glabCommand, "runGlab", {
     configurable: true,
@@ -433,6 +489,17 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
           ].join("\n")
         };
       }
+      if (endpoint?.endsWith("/draft_notes?per_page=100")) {
+        receivedDraftArgs.push(args);
+        return {
+          ok: true,
+          stdout: JSON.stringify([{
+            id: 71,
+            note: "Pending line comment",
+            position: { new_path: "src/review.ts", new_line: 12 }
+          }])
+        };
+      }
       if (endpoint?.includes("/repository/files/")) rawFileRequests += 1;
       return { ok: false, stdout: "" };
     }
@@ -455,6 +522,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
     assert.equal(state.threads[0].comments[0].canEdit, false);
     assert.deepEqual(state.commits, [fallbackCommit]);
     assert.deepEqual(state.reviewers.map((reviewer) => reviewer.username), ["reviewer-one", "reviewer-two"]);
+    assert.deepEqual(state.draftNotes, [{ id: "71", body: "Pending line comment", filePath: "src/review.ts", line: 12 }]);
     assert.equal(rawFileRequests, 0);
     assert.equal(state.files[0]?.path, "src/review.ts");
     assert.equal(state.files[0]?.additions, 1);
@@ -465,6 +533,15 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
       "--hostname",
       "gitlab.example.com",
       "projects/1/merge_requests/2/discussions?per_page=100",
+      "--paginate",
+      "--output",
+      "ndjson"
+    ]);
+    assert.deepEqual(receivedDraftArgs[0], [
+      "api",
+      "--hostname",
+      "gitlab.example.com",
+      "projects/1/merge_requests/2/draft_notes?per_page=100",
       "--paginate",
       "--output",
       "ndjson"

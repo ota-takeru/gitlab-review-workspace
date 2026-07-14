@@ -28,6 +28,17 @@ export const Open: Story = {
   }
 };
 
-export const Resolved: Story = { args: { resolved: true } };
+export const Resolved: Story = {
+  args: { resolved: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const action = canvas.getByRole("button", { name: "Reopen discussion" });
+    await expect(canvas.getByText("Resolved", { exact: true })).toBeVisible();
+    await userEvent.hover(action);
+    await expect(canvas.getByText("Reopen", { exact: true })).toBeVisible();
+    await userEvent.unhover(action);
+    await expect(canvas.getByText("Resolved", { exact: true })).toBeVisible();
+  }
+};
 export const Pending: Story = { args: { resolved: false, pending: true } };
 export const NotResolvable: Story = { args: { resolved: false, resolvable: false } };

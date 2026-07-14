@@ -28,6 +28,7 @@ import {
   RepositoryTreeEntry,
   ReviewComment,
   ReviewCommit,
+  ReviewDraftNote,
   ReviewFile,
   ReviewFileContents,
   ReviewNotification,
@@ -116,6 +117,17 @@ const maxReviewFileBytes = 8 * 1024 * 1024;
 
 interface GitLabUser {
   id: number | string;
+}
+
+interface GitLabDraftNote {
+  id: number | string;
+  note?: string;
+  position?: {
+    old_path?: string;
+    new_path?: string;
+    old_line?: number;
+    new_line?: number;
+  };
 }
 
 export class GitLabReviewClient {
@@ -243,14 +255,15 @@ export class GitLabReviewClient {
 
   async loadMergeRequest(
     reference: Pick<MergeRequestOption, "projectId" | "iid">,
-    fallbackCommits: readonly ReviewCommit[] = []
+    fallbackCommits: readonly ReviewCommit[] = [],
+    fallbackDraftNotes: readonly ReviewDraftNote[] = []
   ): Promise<ReviewState> {
     const project = projectSegment(reference.projectId);
     const mergeRequest = await this.getJson<GitLabMergeRequest>(
       `projects/${project}/merge_requests/${reference.iid}`
     );
     const projectId = String(mergeRequest.project_id);
-    const [diffs, discussions, currentUser, commits] = await Promise.all([
+    const [diffs, discussions, currentUser, commits, draftNotes] = await Promise.all([
       this.getPaginatedJson<GitLabCommitDiff[]>(
         `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/diffs?per_page=100`
       ),
@@ -258,7 +271,10 @@ export class GitLabReviewClient {
         `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/discussions?per_page=100`
       ),
       this.getJson<GitLabUser>("user").catch(() => undefined),
-      this.listMergeRequestCommits(projectId, mergeRequest.iid).catch(() => [...fallbackCommits])
+      this.listMergeRequestCommits(projectId, mergeRequest.iid).catch(() => [...fallbackCommits]),
+      this.getPaginatedJson<GitLabDraftNote[]>(
+        `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/draft_notes?per_page=100`
+      ).then((notes) => notes.map(toReviewDraftNote)).catch(() => [...fallbackDraftNotes])
     ]);
     const baseSha = mergeRequest.diff_refs?.base_sha;
     const startSha = mergeRequest.diff_refs?.start_sha;
@@ -283,7 +299,8 @@ export class GitLabReviewClient {
       reviewers: mapGitLabReviewers(mergeRequest.reviewers),
       commits,
       files,
-      threads: mapGitLabDiscussions(discussions, currentUser?.id)
+      threads: mapGitLabDiscussions(discussions, currentUser?.id),
+      draftNotes
     };
   }
 
@@ -433,6 +450,52 @@ export class GitLabReviewClient {
     return toReviewThread(discussion, true);
   }
 
+  async createOverviewDraftNote(review: ReviewState, body: string): Promise<ReviewDraftNote> {
+    const draftNote = await this.requestJson<GitLabDraftNote>(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "POST",
+        `projects/${projectSegment(review.projectId)}/merge_requests/${review.mergeRequestIid}/draft_notes`,
+        "--raw-field",
+        `note=${body}`
+      ],
+      "Could not add the comment to the GitLab review."
+    );
+
+    return toReviewDraftNote(draftNote);
+  }
+
+  async publishDraftNote(review: ReviewState, draftId: string): Promise<void> {
+    await this.requestVoid(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "PUT",
+        `projects/${projectSegment(review.projectId)}/merge_requests/${review.mergeRequestIid}/draft_notes/${encodeURIComponent(draftId)}/publish`
+      ],
+      "Could not publish the GitLab review comment."
+    );
+  }
+
+  async publishAllDraftNotes(review: ReviewState): Promise<void> {
+    await this.requestVoid(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "POST",
+        `projects/${projectSegment(review.projectId)}/merge_requests/${review.mergeRequestIid}/draft_notes/bulk_publish`
+      ],
+      "Could not submit the GitLab review."
+    );
+  }
+
   private async getRawFile(projectId: string, filePath: string, ref: string): Promise<string> {
     return rawFileLimiter.run(async () => {
       const result = await runGlab([
@@ -502,6 +565,13 @@ export class GitLabReviewClient {
       throw new Error("GitLab returned an unexpected response.");
     }
   }
+
+  private async requestVoid(args: string[], errorMessage: string): Promise<void> {
+    const result = await runGlab(args);
+    if (!result.ok) {
+      throw new Error(errorMessage);
+    }
+  }
 }
 
 function toReviewComment(note: GitLabDiscussionNote): ReviewComment {
@@ -519,6 +589,15 @@ function toReviewThread(discussion: GitLabDiscussion, ownComments: boolean): Rev
     comments: ownComments
       ? thread.comments.map((comment) => ({ ...comment, canEdit: true }))
       : thread.comments
+  };
+}
+
+function toReviewDraftNote(note: GitLabDraftNote): ReviewDraftNote {
+  return {
+    id: String(note.id),
+    body: note.note ?? "",
+    filePath: note.position?.new_path ?? note.position?.old_path,
+    line: note.position?.new_line ?? note.position?.old_line
   };
 }
 

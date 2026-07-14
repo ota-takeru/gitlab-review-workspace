@@ -35,6 +35,7 @@ interface PendingImage {
 const pendingImages = ref<PendingImage[]>([]);
 let editorValue: string | undefined;
 let pickerRange: Range | undefined;
+let plainTextPasteRequested = false;
 const active = computed(() => focused.value || (model.value?.length ?? 0) > 0);
 const uploadBlocked = computed(() => pendingImages.value.some((item) => item.status !== "uploaded"));
 
@@ -113,12 +114,38 @@ function fileAsDataUrl(file: File, onProgress?: (progress: number) => void): Pro
 }
 
 async function onPaste(event: ClipboardEvent): Promise<void> {
+  if (plainTextPasteRequested) {
+    plainTextPasteRequested = false;
+    event.preventDefault();
+    insertPlainText(event.clipboardData?.getData("text/plain") ?? "");
+    return;
+  }
   const imageItem = Array.from(event.clipboardData?.items ?? [])
     .find((item) => item.kind === "file" && /^image\/(?:png|jpe?g|gif|webp)$/i.test(item.type));
   const image = imageItem?.getAsFile();
   if (!image) return;
   event.preventDefault();
   await addImage(image);
+}
+
+function insertPlainText(text: string): void {
+  const element = editor.value;
+  if (!element) return;
+  element.focus();
+  if (!document.execCommand("insertText", false, text)) {
+    const selection = document.getSelection();
+    const range = selection?.rangeCount && element.contains(selection.anchorNode)
+      ? selection.getRangeAt(0)
+      : endRange(element);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+  syncFromEditor();
 }
 
 function captureRange(): Range | undefined {
@@ -299,7 +326,9 @@ function formatSelection(format: string): void {
 }
 
 function keydown(event: KeyboardEvent): void {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "v") {
+    plainTextPasteRequested = true;
+  } else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
     if (!uploadBlocked.value) emit("submit");
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
@@ -312,6 +341,10 @@ function keydown(event: KeyboardEvent): void {
     event.preventDefault();
     emit("cancel");
   }
+}
+
+function keyup(event: KeyboardEvent): void {
+  if (event.key.toLowerCase() === "v") plainTextPasteRequested = false;
 }
 
 watch(model, (value) => {
@@ -446,6 +479,7 @@ function escapeMarkdownImageAlt(value: string): string {
       @input="syncFromEditor"
       @paste="onPaste"
       @keydown="keydown"
+      @keyup="keyup"
     />
     <input ref="imagePicker" class="image-picker" type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="selectImage">
     <div v-if="pendingImages.length" class="image-upload-list" aria-live="polite">

@@ -1,5 +1,7 @@
 .git/**
 .github/**
+.agents/**
+.claude/**
 .playwright-cli/**
 .storybook/**
 .vscode/**

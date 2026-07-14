@@ -79,6 +79,38 @@ export const LongComment: Story = {
   render: renderForm
 };
 
+export const PasteWithoutFormatting: Story = {
+  args: {
+    modelValue: "",
+    ariaLabel: "Plain text paste comment",
+    submitLabel: "Comment"
+  },
+  render: renderForm,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "Plain text paste comment" });
+    await userEvent.click(editor);
+
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", "Bold review text");
+    clipboard.setData("text/html", "<strong>Bold review text</strong>");
+    editor.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true
+    }));
+    editor.dispatchEvent(new ClipboardEvent("paste", {
+      clipboardData: clipboard,
+      bubbles: true,
+      cancelable: true
+    }));
+
+    await expect(editor).toHaveTextContent("Bold review text");
+    await expect(editor.querySelector("strong")).toBeNull();
+  }
+};
+
 export const PickerUploadSuccessAndRemove: Story = {
   args: {
     modelValue: "Attach evidence:",

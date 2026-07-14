@@ -44,6 +44,16 @@ export interface ReviewThreadSummary {
   lastComment?: { author: string; createdAt: string };
 }
 
+export type ReviewSubmissionMode = "comment" | "review";
+
+export interface ReviewDraftNote {
+  id: string;
+  body: string;
+  filePath?: string;
+  line?: number;
+  pending?: boolean;
+}
+
 export interface ReviewFile {
   path: string;
   language: string;
@@ -101,6 +111,7 @@ export interface ReviewState {
   commits: ReviewCommit[];
   files: ReviewFile[];
   threads: ReviewThread[];
+  draftNotes?: ReviewDraftNote[];
 }
 
 export interface ReviewDiffRefs {
@@ -138,6 +149,7 @@ export interface ReviewOverview {
   commits: ReviewCommit[];
   files: FileSummary[];
   threads: ReviewThreadSummary[];
+  draftNotes: ReviewDraftNote[];
   totalComments: number;
   unresolvedThreads: number;
   resolvedThreads: number;

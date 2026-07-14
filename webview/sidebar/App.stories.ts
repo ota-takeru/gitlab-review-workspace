@@ -46,6 +46,7 @@ const state: SidebarViewState = {
     commits: [],
     files: [],
     threads: [],
+    draftNotes: [],
     totalComments: 0,
     unresolvedThreads: 0,
     resolvedThreads: 0,
@@ -118,6 +119,17 @@ const manyFilesState: SidebarViewState = {
   }
 };
 
+const pendingReviewState: SidebarViewState = {
+  ...state,
+  overview: {
+    ...state.overview,
+    draftNotes: [
+      { id: "draft-1", body: "Please keep the public API backwards compatible." },
+      { id: "draft-2", body: "Could we add coverage for this branch?", filePath: "src/review.ts", line: 42 }
+    ]
+  }
+};
+
 function renderState(nextState: SidebarViewState) {
   return {
     components: { SidebarApp: App },
@@ -148,9 +160,32 @@ export const AddReviewThread: Story = {
     const canvas = within(canvasElement);
     const editor = canvas.getByRole("textbox", { name: "Add review thread" });
     await expect(editor).toBeVisible();
+    const commentMode = canvas.getByRole("button", { name: "Post as comment" });
+    const reviewMode = canvas.getByRole("button", { name: "Post as review" });
+    await expect(commentMode).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(editor);
-    await userEvent.type(editor, "Please review the overall approach.");
-    await expect(canvas.getByRole("button", { name: "Add review" })).toBeEnabled();
+    await userEvent.type(editor, "Keep this text.");
+    await expect(canvas.getByRole("button", { name: "Comment" })).toBeEnabled();
+    await userEvent.click(reviewMode);
+    await expect(reviewMode).toHaveAttribute("aria-pressed", "true");
+    await expect(editor).toHaveTextContent("Keep this text.");
+    await expect(canvas.getByRole("button", { name: "Add to review" })).toBeEnabled();
+    await userEvent.click(commentMode);
+    await expect(commentMode).toHaveAttribute("aria-pressed", "true");
+    await expect(editor).toHaveTextContent("Keep this text.");
+  }
+};
+
+export const PendingReview: Story = {
+  render: () => renderState(pendingReviewState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const pendingReview = canvas.getByRole("region", { name: "Pending review" });
+    const pending = within(pendingReview);
+    await expect(pendingReview).toBeVisible();
+    await expect(pending.getByRole("button", { name: "Submit review" })).toBeEnabled();
+    await expect(pending.getAllByRole("button", { name: "Post as comment" })).toHaveLength(2);
+    await expect(pending.getByText("src/review.ts:42")).toBeVisible();
   }
 };
 
@@ -162,7 +197,11 @@ export const DistinctStatusAndActions: Story = {
     const canvas = within(thread!);
     await expect(canvas.getByText("Open", { exact: true })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Go to diff for src/review.ts at line 42" })).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Resolve thread" })).toBeVisible();
+    const status = canvas.getByRole("button", { name: "Resolve discussion" });
+    await userEvent.hover(status);
+    await expect(canvas.getByText("Resolve", { exact: true })).toBeVisible();
+    await userEvent.unhover(status);
+    await expect(canvas.getByText("Open", { exact: true })).toBeVisible();
   }
 };
 

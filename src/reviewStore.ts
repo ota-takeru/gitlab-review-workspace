@@ -15,6 +15,7 @@ import {
   FileSummary,
   LocalEdit,
   MergeRequestOption,
+  ReviewDraftNote,
   ReviewFile,
   ReviewFileContents,
   ReviewFileView,
@@ -22,6 +23,7 @@ import {
   ReviewLoadState,
   ReviewOverview,
   ReviewState,
+  ReviewSubmissionMode,
   ReviewThread,
   ReviewThreadSummary,
   RepositoryTreeEntry
@@ -135,6 +137,7 @@ export class ReviewStore {
           ...cachedState,
           commits: cachedState.commits ?? [],
           reviewers: cachedState.reviewers ?? [],
+          draftNotes: cachedState.draftNotes ?? [],
           threads: cachedState.threads.map((thread) => ({
             ...thread,
             comments: thread.comments.map((comment) => ({ ...comment, canEdit: false }))
@@ -208,6 +211,7 @@ export class ReviewStore {
       commits: this.state?.commits ?? [],
       files,
       threads,
+      draftNotes: this.state?.draftNotes ?? [],
       totalComments: threads.reduce((total, thread) => total + thread.commentCount, 0),
       unresolvedThreads,
       resolvedThreads,
@@ -374,7 +378,7 @@ export class ReviewStore {
             && (previousState.projectId === reference.projectId || sameReference(this.lastLoadedReference, reference))
             ? previousState.commits ?? []
             : [];
-          const loadedState = await client.loadMergeRequest(reference, fallbackCommits);
+          const loadedState = await client.loadMergeRequest(reference, fallbackCommits, previousState?.draftNotes ?? []);
           if (generation !== this.refreshGeneration) return;
           this.state = loadedState;
           this.lastLoadedReference = reference;
@@ -788,10 +792,15 @@ export class ReviewStore {
     }
   }
 
-  async addOverviewThread(body: string): Promise<void> {
+  async addOverviewThread(body: string, mode: ReviewSubmissionMode = "comment"): Promise<void> {
     const review = this.state;
     const trimmed = body.trim();
     if (!review || !trimmed) {
+      return;
+    }
+
+    if (mode === "review") {
+      await this.addOverviewDraftNote(review, trimmed);
       return;
     }
 
@@ -824,6 +833,70 @@ export class ReviewStore {
       }
       this.emitChange();
       void vscode.window.showErrorMessage("GitLab のレビュースレッドを追加できませんでした。");
+    }
+  }
+
+  async publishReviewDraft(draftId: string): Promise<void> {
+    const review = this.state;
+    const draft = review?.draftNotes?.find((candidate) => candidate.id === draftId);
+    if (!review || !draft || draft.pending) return;
+
+    draft.pending = true;
+    this.emitChange();
+    try {
+      await this.getClient().publishDraftNote(review, draftId);
+      review.draftNotes = review.draftNotes?.filter((candidate) => candidate.id !== draftId) ?? [];
+      this.persistReviewState();
+      this.emitChange();
+      await this.refresh();
+    } catch {
+      draft.pending = false;
+      this.emitChange();
+      void vscode.window.showErrorMessage("レビューコメントを今すぐ公開できませんでした。");
+    }
+  }
+
+  async submitReview(): Promise<void> {
+    const review = this.state;
+    const drafts = review?.draftNotes ?? [];
+    if (!review || !drafts.length || drafts.some((draft) => draft.pending)) return;
+
+    drafts.forEach((draft) => { draft.pending = true; });
+    this.emitChange();
+    try {
+      await this.getClient().publishAllDraftNotes(review);
+      review.draftNotes = [];
+      this.persistReviewState();
+      this.emitChange();
+      await this.refresh();
+    } catch {
+      drafts.forEach((draft) => { draft.pending = false; });
+      this.emitChange();
+      void vscode.window.showErrorMessage("GitLab のレビューを送信できませんでした。");
+    }
+  }
+
+  private async addOverviewDraftNote(review: ReviewState, body: string): Promise<void> {
+    const pendingDraft: ReviewDraftNote = {
+      id: pendingId("draft-note"),
+      body,
+      pending: true
+    };
+    const drafts = review.draftNotes ?? (review.draftNotes = []);
+    drafts.push(pendingDraft);
+    this.emitChange();
+
+    try {
+      const confirmedDraft = await this.getClient().createOverviewDraftNote(review, body);
+      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
+      if (index >= 0) drafts[index] = confirmedDraft;
+      this.persistReviewState();
+      this.emitChange();
+    } catch {
+      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
+      if (index >= 0) drafts.splice(index, 1);
+      this.emitChange();
+      void vscode.window.showErrorMessage("コメントを GitLab のレビューに追加できませんでした。");
     }
   }
 
@@ -1302,6 +1375,7 @@ function normalizeCachedReviewState(value: unknown): ReviewState | undefined {
     reviewers: candidate.reviewers ?? [],
     commits: candidate.commits ?? [],
     threads: candidate.threads ?? [],
+    draftNotes: candidate.draftNotes ?? [],
     files
   };
 }
