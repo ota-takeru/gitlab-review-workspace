@@ -14,7 +14,6 @@ import type { MyWorkMergeRequest } from "../../src/myWorkTypes";
 import type { ReviewComment, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
 import type { HostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
-import GlAvatar from "../common/components/GlAvatar.vue";
 import GlAvatarGroup from "../common/components/GlAvatarGroup.vue";
 import GlButton from "../common/components/GlButton.vue";
 import GlComment from "../common/components/GlComment.vue";
@@ -60,6 +59,7 @@ const editingComments = reactive<Record<string, boolean>>(saved.editingComments 
 const collapsedThreads = reactive<Record<string, boolean>>(saved.collapsedThreads ?? {});
 const overviewThreadDrafts = reactive<Record<string, string>>(saved.overviewThreadDrafts ?? {});
 const overviewThreadModes = reactive<Record<string, ReviewSubmissionMode>>(saved.overviewThreadModes ?? {});
+const threadSearchQuery = ref("");
 const resolvedByThread = new Map<string, boolean>();
 const requestedThreadDetails = new Set<string>();
 let loadedMrKey = "";
@@ -83,6 +83,17 @@ const overviewThreadDraft = computed({
 const overviewThreadMode = computed<ReviewSubmissionMode>(() => overviewThreadModes[mrKey.value] ?? "comment");
 const reviewSubmissionPending = computed(() => overview.value?.draftNotes.some((draft) => draft.pending) ?? false);
 const commentProjectId = computed(() => overview.value?.selectedMergeRequest?.projectId);
+const normalizedThreadSearchQuery = computed(() => threadSearchQuery.value.trim().toLocaleLowerCase());
+const filteredThreads = computed(() => {
+  const threads = overview.value?.threads ?? [];
+  const query = normalizedThreadSearchQuery.value;
+  if (!query) return threads;
+  return threads.filter((thread) => [
+    thread.filePath ?? "MR overview",
+    thread.authors.map((author) => author.name).join(" "),
+    thread.searchText
+  ].join("\n").toLocaleLowerCase().includes(query));
+});
 const filteredCommits = computed(() => {
   const commits = overview.value?.commits ?? [];
   const selection = commitSelection.value;
@@ -238,6 +249,16 @@ function threadPanelId(thread: ReviewThreadSummary): string {
 function lastComment(thread: ReviewThreadSummary): ReviewThreadSummary["lastComment"] { return thread.lastComment; }
 function replyCount(thread: ReviewThreadSummary): number { return Math.max(0, thread.commentCount - 1); }
 function relativeReplyTime(thread: ReviewThreadSummary): string { return formatRelativeReplyTime(lastComment(thread)?.createdAt); }
+function threadSearchExcerpt(thread: ReviewThreadSummary): string {
+  const query = normalizedThreadSearchQuery.value;
+  if (!query) return "";
+  const text = thread.searchText.replace(/\s+/g, " ").trim();
+  const matchIndex = text.toLocaleLowerCase().indexOf(query);
+  if (matchIndex < 0) return "";
+  const start = Math.max(0, matchIndex - 36);
+  const end = Math.min(text.length, matchIndex + query.length + 60);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+}
 function reconcileThreads(threads: readonly ReviewThreadSummary[]): void {
   let changed = false;
   for (const thread of threads) {
@@ -331,6 +352,7 @@ function receiveState(event: MessageEvent<HostMessage<SidebarViewState>>): void 
   const nextMrKey = selected ? `${selected.projectId}!${selected.iid}` : "";
   if (nextMrKey !== loadedMrKey) {
     loadedMrKey = nextMrKey;
+    threadSearchQuery.value = "";
     changedFileLimit.value = 200;
     commitFileLimit.value = 200;
     requestedThreadDetails.clear();
@@ -699,9 +721,36 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
+        <div class="thread-search">
+          <input
+            v-model="threadSearchQuery"
+            class="gl-input thread-search-input"
+            type="search"
+            aria-label="Search reviews in this merge request"
+            placeholder="Search review comments…"
+          />
+          <GlButton
+            v-if="threadSearchQuery"
+            variant="link"
+            size="small"
+            aria-label="Clear review search"
+            @click="threadSearchQuery = ''"
+          >Clear</GlButton>
+          <span v-if="normalizedThreadSearchQuery" class="thread-search-status" aria-live="polite">
+            {{ filteredThreads.length }} of {{ overview.threads.length }} threads
+          </span>
+        </div>
+
         <div class="thread-list">
+          <GlEmptyState
+            v-if="normalizedThreadSearchQuery && filteredThreads.length === 0"
+            title="No review comments found"
+            :description="`No comments match “${threadSearchQuery.trim()}” in this merge request.`"
+            icon="search"
+            compact
+          />
           <article
-            v-for="thread in overview.threads"
+            v-for="thread in filteredThreads"
             :key="thread.id"
             class="thread"
             :class="{ resolved: thread.resolved, collapsed: isThreadCollapsed(thread) }"
@@ -717,11 +766,10 @@ onBeforeUnmount(() => {
               >
                 <GlIcon name="chevron-right" :size="12" />
                 <GlAvatarGroup
-                  v-if="thread.authors.length"
+                  v-if="thread.commentCount > 1 && thread.authors.length"
                   :items="thread.authors"
                   aria-label="Reply authors"
                 />
-                <GlAvatar v-else name="GitLab user" />
                 <span class="thread-heading">
                   <span v-if="isThreadCollapsed(thread) && replyCount(thread) > 0" class="thread-summary-line">
                     <strong class="reply-count-link">{{ replyCount(thread) }} replies</strong>
@@ -732,6 +780,7 @@ onBeforeUnmount(() => {
                     <span class="thread-last-reply">{{ thread.commentCount }} comments</span>
                   </template>
                   <span v-if="isThreadCollapsed(thread)" class="thread-location gl-truncate">{{ thread.filePath ? `${thread.filePath}${thread.line ? `:${thread.line}` : ""}` : "MR overview" }}</span>
+                  <span v-if="threadSearchExcerpt(thread)" class="thread-search-excerpt gl-truncate">{{ threadSearchExcerpt(thread) }}</span>
                 </span>
               </button>
               <span class="thread-actions">
@@ -965,6 +1014,10 @@ onBeforeUnmount(() => {
 .open-count { color: var(--gl-text-subtle); font-size: 10px; }
 select { min-height: 24px; border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); color: var(--vscode-dropdown-foreground, var(--gl-text-default)); background: var(--vscode-dropdown-background, var(--gl-surface-raised)); }
 .thread-list { min-width: 0; display: grid; gap: var(--gl-spacing-8); }
+.thread-search { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--gl-spacing-4); align-items: center; margin-bottom: var(--gl-spacing-8); }
+.thread-search-input { min-width: 0; height: 28px; padding-block: var(--gl-spacing-4); }
+.thread-search-input::-webkit-search-cancel-button { display: none; }
+.thread-search-status { grid-column: 1 / -1; color: var(--gl-text-subtle); font-size: 10px; }
 .new-thread-composer { min-width: 0; margin-bottom: var(--gl-spacing-8); }
 .submission-mode-row { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-8); margin-bottom: var(--gl-spacing-4); }
 .submission-mode-label { flex: none; color: var(--gl-text-subtle); font-size: 10px; }
@@ -1037,6 +1090,7 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .thread-last-reply { min-width: 0; color: var(--gl-text-subtle); font-size: 10px; }
 .thread-last-reply b, .thread-expanded-title { color: var(--gl-text-strong); font-size: 11px; }
 .thread-location { color: var(--gl-text-subtle); font: 9px var(--vscode-editor-font-family); }
+.thread-search-excerpt { color: var(--gl-text-subtle); font-size: 10px; }
 .view-diff-action { min-height: 28px; white-space: nowrap; color: var(--gl-thread-accent); }
 .view-diff-action:hover:not(:disabled) { color: var(--gl-text-strong); background: color-mix(in srgb, var(--gl-thread-accent) 12%, transparent); }
 .comment-edit-action { color: var(--gl-text-subtle); }

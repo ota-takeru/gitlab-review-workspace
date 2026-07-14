@@ -64,6 +64,11 @@ let draftPersistTimer: number | undefined;
 const maxPersistedEditDraftCharacters = 512_000;
 
 const model = computed(() => state.value?.viewModel);
+const newChangesUnavailable = computed(() => {
+  const comparison = state.value?.newChanges;
+  return comparison?.selected === "new"
+    && (comparison.loading || Boolean(comparison.errorMessage) || comparison.fileChanged === false);
+});
 const lines = computed(() => model.value?.lines ?? []);
 const threadsById = computed(() => new Map((model.value?.threads ?? []).map((thread) => [thread.id, thread])));
 const displayedLines = computed(() => {
@@ -194,6 +199,11 @@ function setDiffScope(next: GlDiffScope): void {
   }
 }
 
+function setReviewRange(event: Event): void {
+  const range = (event.target as HTMLSelectElement).value;
+  if (range === "all" || range === "new") post({ type: "setReviewRange", range });
+}
+
 function persist(): void {
   const persisted: PersistedReviewFileState = {
     editDrafts: editDrafts.value,
@@ -234,7 +244,7 @@ function applyState(next: ReviewFileViewState): void {
   const previousMode = state.value?.mode;
   const previousSource = state.value?.source ?? "review";
   state.value = next;
-  if (next.source === "commit" && previousSource !== "commit") {
+  if ((next.source === "commit" || next.source === "new-changes") && previousSource !== next.source) {
     diffScope.value = "changes";
     persist();
   }
@@ -650,7 +660,7 @@ onBeforeUnmount(() => {
       </aside>
     </section>
   </main>
-  <main v-else class="review-file-app review-root">
+  <main v-else class="review-file-app review-root" :class="{ 'has-version-compare': state.newChanges }">
     <GlDiffHeader :path="model.file.path" sticky>
       <template #meta>
         <span v-if="state.source === 'commit' && state.commit" class="commit-context">
@@ -668,8 +678,8 @@ onBeforeUnmount(() => {
         </span>
       </template>
       <template #actions>
-        <GlDiffScopeToggle :model-value="diffScope" @update:model-value="setDiffScope" />
-        <template v-if="state.source !== 'commit'">
+        <GlDiffScopeToggle v-if="!newChangesUnavailable" :model-value="diffScope" @update:model-value="setDiffScope" />
+        <template v-if="state.source === 'review' && state.newChanges?.selected !== 'new'">
           <GlButton
             size="small"
             icon="pencil"
@@ -688,15 +698,43 @@ onBeforeUnmount(() => {
       </template>
     </GlDiffHeader>
 
-    <div class="diff-context" aria-label="Diff legend">
+    <div v-if="state.newChanges" class="version-compare" aria-label="Compare merge request changes">
+      <span class="version-compare-label"><GlIcon name="commit" :size="12" />Compare</span>
+      <select
+        :value="state.newChanges.selected"
+        aria-label="Merge request change range"
+        @change="setReviewRange"
+      >
+        <option value="all">All changes</option>
+        <option value="new">
+          New changes · {{ state.newChanges.commitCount }} commit{{ state.newChanges.commitCount === 1 ? "" : "s" }} ·
+          {{ state.newChanges.fromSha.slice(0, 8) }}…{{ state.newChanges.toSha.slice(0, 8) }}
+        </option>
+      </select>
+      <GlBadge v-if="state.newChanges.selected === 'new'" tone="brand" pill>Latest push</GlBadge>
+      <span v-if="state.newChanges.loading" class="version-compare-state"><GlIcon name="spinner" class="spin" :size="12" />Comparing…</span>
+      <span v-else-if="state.newChanges.errorMessage" class="version-compare-state is-danger">{{ state.newChanges.errorMessage }}</span>
+      <span v-else-if="state.newChanges.selected === 'new' && state.newChanges.fileChanged === false" class="version-compare-state">
+        This file did not change in the latest push.
+      </span>
+    </div>
+
+    <GlEmptyState
+      v-if="newChangesUnavailable"
+      :title="state.newChanges?.loading ? 'Comparing new changes…' : state.newChanges?.errorMessage ? 'Could not compare new changes' : 'No new changes in this file'"
+      :description="state.newChanges?.errorMessage || 'Switch to All changes to view the complete merge request diff.'"
+      :icon="state.newChanges?.loading ? 'spinner' : state.newChanges?.errorMessage ? 'warning' : 'commit'"
+    />
+
+    <div v-if="!newChangesUnavailable" class="diff-context" aria-label="Diff legend">
       <span class="context-copy">Drag across lines and release to start a discussion.</span>
-      <span class="legend-item mr-add"><span class="legend-swatch" />MR addition</span>
-      <span class="legend-item mr-del"><span class="legend-swatch" />MR deletion</span>
+      <span class="legend-item mr-add"><span class="legend-swatch" />{{ state.source === "new-changes" ? "New addition" : "MR addition" }}</span>
+      <span class="legend-item mr-del"><span class="legend-swatch" />{{ state.source === "new-changes" ? "New deletion" : "MR deletion" }}</span>
       <span class="legend-item local-add"><span class="legend-swatch" />Local addition</span>
       <span class="legend-item local-del"><span class="legend-swatch" />Local deletion</span>
     </div>
 
-    <div v-if="model.fullFileState !== 'loaded'" class="full-file-state" role="status">
+    <div v-if="!newChangesUnavailable && model.fullFileState !== 'loaded'" class="full-file-state" role="status">
       <span v-if="model.fullFileState === 'loading'"><GlIcon name="spinner" class="spin" :size="13" /> Loading full file…</span>
       <span v-else-if="model.fullFileState === 'too-large' || model.fullFileState === 'binary' || model.fullFileState === 'error'">
         <GlIcon name="warning" :size="13" />{{ model.fullFileMessage || 'The full file cannot be displayed.' }}
@@ -710,10 +748,11 @@ onBeforeUnmount(() => {
     </div>
 
     <GlDiffSideBySideTable
+      v-if="!newChangesUnavailable"
       class="code-table"
       :rows="reviewSideBySideRows"
       :left-label="'変更前'"
-      :right-label="model.hasLocalEdit ? 'Working copy' : 'Merge request'"
+      :right-label="model.hasLocalEdit ? 'Working copy' : state.source === 'new-changes' ? 'Latest push' : 'Merge request'"
       aria-label="File changes"
     >
       <template #row="{ row, index }">
@@ -903,7 +942,23 @@ onBeforeUnmount(() => {
 }
 
 .review-root { display: grid; grid-template-rows: auto auto 1fr; }
+.review-root.has-version-compare { grid-template-rows: auto auto auto 1fr; }
 .edit-root { display: grid; grid-template-rows: auto 1fr; }
+
+.version-compare {
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: var(--gl-spacing-8);
+  padding: var(--gl-spacing-4) var(--gl-spacing-12);
+  border-bottom: 1px solid var(--gl-border-default);
+  background: color-mix(in srgb, var(--gl-commit-accent) 7%, var(--gl-surface-raised));
+}
+.version-compare-label { flex: none; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-commit-accent); font-size: 10px; font-weight: 600; }
+.version-compare select { min-width: 0; max-width: 440px; min-height: 24px; border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); color: var(--vscode-dropdown-foreground, var(--gl-text-default)); background: var(--vscode-dropdown-background, var(--gl-surface-raised)); font-size: 10px; }
+.version-compare-state { min-width: 0; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); overflow: hidden; color: var(--gl-text-subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.version-compare-state.is-danger { color: var(--gl-feedback-danger); }
 
 .file-details,
 .detail-item,
@@ -1194,6 +1249,9 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
+  .version-compare { flex-wrap: wrap; }
+  .version-compare select { flex: 1; max-width: none; }
+  .version-compare-state { flex-basis: 100%; }
   .context-copy { flex-basis: 100%; }
   .new-discussion,
   .discussion { width: calc(100vw - 24px); margin-left: var(--gl-spacing-12); }

@@ -5,6 +5,7 @@ import type {
   FileReviewViewModel,
   RepositoryTreeEntry,
   ReviewCommit,
+  ReviewUpdateRange,
   ReviewOverview,
   ReviewSubmissionMode,
   ReviewThread
@@ -50,13 +51,19 @@ export interface ReviewFileViewState {
   mode: "review" | "edit";
   canEditLocally: boolean;
   projectId?: string;
-  source?: "review" | "commit";
+  source?: "review" | "commit" | "new-changes";
   filePath: string;
   threadScope: string;
   viewModel?: FileReviewViewModel;
   targetLine?: number;
   targetThreadId?: string;
   commit?: ReviewCommit;
+  newChanges?: ReviewUpdateRange & {
+    selected: "all" | "new";
+    loading: boolean;
+    fileChanged?: boolean;
+    errorMessage?: string;
+  };
 }
 
 export interface CommitDiffViewState {
@@ -106,6 +113,7 @@ export type ReviewFileMessage =
   | ReadyMessage
   | { type: "loadFullFile" }
   | { type: "loadLineWindow"; start: number }
+  | { type: "setReviewRange"; range: "all" | "new" }
   | { type: "enterEdit" }
   | { type: "cancelEdit" }
   | { type: "saveLocalEdit"; text: string }

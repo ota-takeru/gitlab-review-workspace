@@ -10,7 +10,7 @@ import type {
   ReviewFileMessage,
   ReviewFileViewState
 } from "./webviewProtocol";
-import type { CommitFileReviewContext } from "./reviewTypes";
+import type { CommitFileReviewContext, NewChangesFileReviewContext, ReviewUpdateRange } from "./reviewTypes";
 
 type PanelMode = "review" | "edit";
 
@@ -136,6 +136,11 @@ class ReviewFilePanel {
   private readonly panel: vscode.WebviewPanel;
   private mode: PanelMode = "review";
   private commitContext?: CommitFileReviewContext;
+  private reviewRange: "all" | "new" = "all";
+  private newChangesContext?: NewChangesFileReviewContext | null;
+  private newChangesLoading = false;
+  private newChangesError?: string;
+  private newChangesKey = "";
   private pendingLine?: number;
   private pendingThreadId?: string;
   private ready = false;
@@ -189,10 +194,12 @@ class ReviewFilePanel {
     this.lineWindowStart = 0;
     this.fullFileError = undefined;
     this.reveal(line, threadId);
+    void this.syncNewChanges(true);
   }
 
   openCommit(context: CommitFileReviewContext): void {
     this.commitContext = context;
+    this.reviewRange = "all";
     this.mode = "review";
     this.lineWindowStart = 0;
     this.fullFileError = undefined;
@@ -209,6 +216,7 @@ class ReviewFilePanel {
 
   refreshFromStore(): void {
     if (!this.panel.visible || this.mode === "edit" || this.store.getIsRefreshing()) return;
+    void this.syncNewChanges(true);
     this.postState();
   }
 
@@ -230,6 +238,8 @@ class ReviewFilePanel {
   private deliverState(): void {
     if (!this.ready || !this.panel.visible) return;
 
+    const newChanges = this.commitContext ? undefined : this.store.getNewChanges();
+    const useNewChanges = this.reviewRange === "new" && Boolean(this.newChangesContext);
     const viewModel = this.commitContext
       ? this.store.buildCommitFileViewModel(this.commitContext, {
           windowStart: this.lineWindowStart,
@@ -238,6 +248,13 @@ class ReviewFilePanel {
           fullFileStateOverride: this.fullFileLoading ? "loading" : this.fullFileError ? "error" : undefined,
           fullFileMessage: this.fullFileError
         })
+      : useNewChanges
+        ? this.store.buildNewChangesFileViewModel(this.newChangesContext as NewChangesFileReviewContext, {
+            windowStart: this.lineWindowStart,
+            targetLine: this.pendingLine,
+            fullFileStateOverride: this.fullFileLoading ? "loading" : this.fullFileError ? "error" : undefined,
+            fullFileMessage: this.fullFileError
+          })
       : this.store.getFileViewModel(this.filePath, {
           windowStart: this.lineWindowStart,
           targetLine: this.pendingLine,
@@ -262,7 +279,7 @@ class ReviewFilePanel {
       mode: this.mode,
       canEditLocally: this.canEditLocally(),
       projectId: selectedMergeRequest?.projectId,
-      source: this.commitContext ? "commit" : "review",
+      source: this.commitContext ? "commit" : useNewChanges ? "new-changes" : "review",
       filePath: this.filePath,
       threadScope: this.commitContext
         ? `commit:${this.commitContext.commit.id}:${this.filePath}`
@@ -272,7 +289,14 @@ class ReviewFilePanel {
       viewModel,
       targetLine,
       targetThreadId,
-      commit: this.commitContext?.commit
+      commit: this.commitContext?.commit,
+      newChanges: newChanges ? {
+        ...newChanges,
+        selected: this.reviewRange,
+        loading: this.newChangesLoading,
+        fileChanged: this.newChangesContext === undefined ? undefined : this.newChangesContext !== null,
+        errorMessage: this.newChangesError
+      } : undefined
     };
     void this.panel.webview
       .postMessage({ type: "state", state } satisfies HostMessage<ReviewFileViewState>)
@@ -294,6 +318,14 @@ class ReviewFilePanel {
         return;
       case "loadLineWindow":
         this.lineWindowStart = Math.max(0, Math.floor(message.start));
+        this.postState();
+        return;
+      case "setReviewRange":
+        if (this.commitContext || (message.range === "new" && !this.store.getNewChanges())) return;
+        this.reviewRange = message.range;
+        this.lineWindowStart = 0;
+        this.fullFileError = undefined;
+        if (message.range === "new") await this.syncNewChanges(false);
         this.postState();
         return;
       case "enterEdit":
@@ -335,7 +367,12 @@ class ReviewFilePanel {
         await this.store.toggleResolved(message.threadId);
         return;
       case "addThread":
-        await this.store.addThread(this.filePath, message.mrLine, message.oldLine, message.body);
+        await this.store.addThread(
+          this.filePath,
+          message.mrLine,
+          this.reviewRange === "new" ? undefined : message.oldLine,
+          message.body
+        );
         return;
       case "uploadCommentImage":
       case "resolveCommentImage":
@@ -348,6 +385,8 @@ class ReviewFilePanel {
     if (this.fullFileLoading) return false;
     const currentModel = this.commitContext
       ? this.store.buildCommitFileViewModel(this.commitContext)
+      : this.reviewRange === "new" && this.newChangesContext
+        ? this.store.buildNewChangesFileViewModel(this.newChangesContext)
       : this.store.getFileViewModel(this.filePath);
     if (currentModel?.fullFileState === "loaded") return true;
     this.fullFileLoading = true;
@@ -359,6 +398,10 @@ class ReviewFilePanel {
         const contents = await this.store.loadCommitFileContents(commitContext.commit.id, commitContext.file);
         if (this.commitContext !== commitContext || !this.panel.visible) return false;
         commitContext.contents = contents;
+      } else if (this.reviewRange === "new" && this.newChangesContext) {
+        const comparisonContext = this.newChangesContext;
+        await this.store.loadNewChangesFileContents(comparisonContext);
+        if (this.newChangesContext !== comparisonContext || !this.panel.visible) return false;
       } else {
         await this.store.loadReviewFileContents(this.filePath);
       }
@@ -370,6 +413,46 @@ class ReviewFilePanel {
     } finally {
       this.fullFileLoading = false;
       this.postState();
+    }
+  }
+
+  private async syncNewChanges(autoSelect: boolean): Promise<void> {
+    if (this.commitContext) return;
+    const range = this.store.getNewChanges();
+    const key = newChangesRangeKey(range);
+    if (!range) {
+      this.newChangesKey = "";
+      this.newChangesContext = undefined;
+      this.newChangesError = undefined;
+      this.newChangesLoading = false;
+      this.reviewRange = "all";
+      return;
+    }
+    if (key !== this.newChangesKey) {
+      this.newChangesKey = key;
+      this.newChangesContext = undefined;
+      this.newChangesError = undefined;
+      this.newChangesLoading = false;
+      if (autoSelect) this.reviewRange = "new";
+    }
+    if (this.reviewRange !== "new" || this.newChangesContext !== undefined || this.newChangesLoading) return;
+
+    this.newChangesLoading = true;
+    this.postState();
+    try {
+      const context = await this.store.loadNewChangesFileReviewContext(this.filePath);
+      if (newChangesRangeKey(this.store.getNewChanges()) !== key) return;
+      this.newChangesContext = context ?? null;
+      this.newChangesError = undefined;
+    } catch (error) {
+      if (newChangesRangeKey(this.store.getNewChanges()) !== key) return;
+      this.newChangesContext = undefined;
+      this.newChangesError = error instanceof Error ? error.message : "Could not compare the new changes.";
+    } finally {
+      if (newChangesRangeKey(this.store.getNewChanges()) === key) {
+        this.newChangesLoading = false;
+        this.postState();
+      }
     }
   }
 
@@ -429,13 +512,17 @@ class ReviewFilePanel {
   }
 
   private canEditLocally(): boolean {
-    if (this.commitContext) return false;
+    if (this.commitContext || this.reviewRange === "new") return false;
     const overview = this.store.getOverview();
     const selected = overview.selectedMergeRequest;
     if (!selected || !overview.sourceBranch) return false;
     const localState = this.localGit.getState(overview.sourceBranch, selected.projectId);
     return canEditReviewLocally(localState);
   }
+}
+
+function newChangesRangeKey(range: ReviewUpdateRange | undefined): string {
+  return range ? `${range.projectId}!${range.mergeRequestIid}:${range.fromSha}:${range.toSha}` : "";
 }
 
 function basename(filePath: string): string {

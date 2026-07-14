@@ -69,7 +69,7 @@ export interface GitLabProject {
 
 export interface GitLabCompareResult {
   commits?: unknown[];
-  diffs?: unknown[];
+  diffs?: GitLabCommitDiff[];
 }
 
 export interface GitLabBranch {
@@ -205,6 +205,13 @@ export class GitLabReviewClient {
     return mapGitLabCommitDiffs(diffs);
   }
 
+  async compareCommits(projectId: string, from: string, to: string): Promise<CommitDiffFile[]> {
+    const comparison = await this.getJson<GitLabCompareResult>(
+      `projects/${projectSegment(projectId)}/repository/compare?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&straight=true`
+    );
+    return mapGitLabCommitDiffs(comparison.diffs ?? []);
+  }
+
   async loadCommitFileContents(
     projectId: string,
     commitId: string,
@@ -220,6 +227,19 @@ export class GitLabReviewClient {
     const newText = file.deletedFile
       ? ""
       : await this.getRawFile(projectId, file.newPath, commitId);
+    return { oldText, newText };
+  }
+
+  async loadComparisonFileContents(
+    projectId: string,
+    from: string,
+    to: string,
+    file: Pick<CommitDiffFile, "oldPath" | "newPath" | "newFile" | "deletedFile">
+  ): Promise<CommitFileContents> {
+    const [oldText, newText] = await Promise.all([
+      file.newFile ? Promise.resolve("") : this.getRawFile(projectId, file.oldPath, from),
+      file.deletedFile ? Promise.resolve("") : this.getRawFile(projectId, file.newPath, to)
+    ]);
     return { oldText, newText };
   }
 

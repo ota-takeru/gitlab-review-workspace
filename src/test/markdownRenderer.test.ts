@@ -47,3 +47,18 @@ test("escapes untrusted text and refuses unsafe link schemes", () => {
 test("preserves line breaks inside paragraphs", () => {
   assert.equal(renderMarkdown("first line\nsecond line"), "<p>first line<br>second line</p>");
 });
+
+test("renders backslash-escaped punctuation as literal text", () => {
+  assert.equal(
+    renderMarkdown(String.raw`\[メモ\] \*not italic\* \\path \#tag \&`),
+    "<p>[メモ] *not italic* \\path #tag &amp;</p>"
+  );
+  assert.equal(
+    renderMarkdown(String.raw`\[GitLab\](https://gitlab.com) \<tag\>`),
+    "<p>[GitLab](https://gitlab.com) &lt;tag&gt;</p>"
+  );
+});
+
+test("preserves backslashes inside inline code", () => {
+  assert.equal(renderMarkdown("`\\[メモ\\]`"), "<p><code>\\[メモ\\]</code></p>");
+});
