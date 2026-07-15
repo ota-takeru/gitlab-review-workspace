@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { onMounted } from "vue";
 import type { SidebarViewState } from "../../src/webviewProtocol";
 import App from "./App.vue";
@@ -174,6 +174,14 @@ export const AddReviewThread: Story = {
     await userEvent.click(commentMode);
     await expect(commentMode).toHaveAttribute("aria-pressed", "true");
     await expect(editor).toHaveTextContent("Keep this text.");
+    const messages = (window as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+    const messageCount = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(messages.slice(messageCount)).toContainEqual({
+      type: "addOverviewThread",
+      body: "Keep this text.",
+      mode: "comment"
+    }));
   }
 };
 
@@ -212,7 +220,10 @@ export const SearchReviewComments: Story = {
   render: () => renderState({ ...threadState, threadDetails: [] }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("searchbox", { name: "Search reviews in this merge request" })).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Search review comments" }));
     const search = canvas.getByRole("searchbox", { name: "Search reviews in this merge request" });
+    await expect(canvasElement.ownerDocument.activeElement).toBe(search);
     await userEvent.type(search, "simplify");
     await expect(canvas.getByText("1 of 1 threads")).toBeVisible();
     await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
@@ -222,6 +233,8 @@ export const SearchReviewComments: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Clear review search" }));
     await expect(search).toHaveValue("");
     await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
+    await userEvent.click(canvas.getByRole("button", { name: "Close review search" }));
+    await expect(canvas.queryByRole("searchbox", { name: "Search reviews in this merge request" })).toBeNull();
   }
 };
 

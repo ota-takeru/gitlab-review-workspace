@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { installCommentImageHostMock } from "../../stories/commentImageHostMock";
 import GlCommentForm from "./GlCommentForm.vue";
 
@@ -21,9 +21,12 @@ function renderForm(args: Record<string, unknown>) {
     components: { GlCommentForm },
     setup() {
       const value = ref(String(args.modelValue ?? ""));
-      return { args, value };
+      const lineEnding = computed(() => value.value.includes("\r")
+        ? (value.value.includes("\n") ? "crlf" : "cr")
+        : (value.value.includes("\n") ? "lf" : "none"));
+      return { args, value, lineEnding };
     },
-    template: '<GlCommentForm v-model="value" v-bind="args" />'
+    template: '<GlCommentForm v-model="value" v-bind="args" /><textarea data-testid="comment-value" :value="value" aria-hidden="true" tabindex="-1" readonly style="display:none" /><span data-testid="comment-line-ending" :data-line-ending="lineEnding" aria-hidden="true" style="display:none" />'
   };
 }
 
@@ -58,6 +61,27 @@ export const CompactIdle: Story = {
     await userEvent.click(editor);
     await userEvent.type(editor, "Looks good");
     await expect(editor).toHaveTextContent("Looks good");
+  }
+};
+
+export const MultilineEntry: Story = {
+  args: {
+    modelValue: "",
+    ariaLabel: "Multiline review comment",
+    submitLabel: "Comment"
+  },
+  render: renderForm,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "Multiline review comment" });
+    const value = canvas.getByTestId("comment-value");
+    const lineEnding = canvas.getByTestId("comment-line-ending");
+    await userEvent.click(editor);
+    await userEvent.type(editor, "first line");
+    await userEvent.keyboard("{Enter}");
+    await userEvent.type(editor, "second line");
+    await expect(lineEnding).toHaveAttribute("data-line-ending", "lf");
+    await expect(value).toHaveValue("first line\nsecond line");
   }
 };
 

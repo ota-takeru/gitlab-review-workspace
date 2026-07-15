@@ -62,3 +62,21 @@ test("renders backslash-escaped punctuation as literal text", () => {
 test("preserves backslashes inside inline code", () => {
   assert.equal(renderMarkdown("`\\[メモ\\]`"), "<p><code>\\[メモ\\]</code></p>");
 });
+
+test("renders fenced code blocks as literal preformatted code", () => {
+  assert.equal(
+    renderMarkdown("説明\n\n```csharp\nif (value < 1) {\n  return `raw`;\n}\n```\n\n続き"),
+    "<p>説明</p><pre><code class=\"language-csharp\">if (value &lt; 1) {\n  return `raw`;\n}\n</code></pre><p>続き</p>"
+  );
+  assert.equal(
+    renderMarkdown("~~~javascript\nconst value = 1;\n~~~"),
+    "<pre><code class=\"language-javascript\">const value = 1;\n</code></pre>"
+  );
+});
+
+test("renders indented code blocks and escapes their contents", () => {
+  assert.equal(
+    renderMarkdown("    <script>alert(1)</script>\n\treturn value;"),
+    "<pre><code>&lt;script&gt;alert(1)&lt;/script&gt;\nreturn value;\n</code></pre>"
+  );
+});

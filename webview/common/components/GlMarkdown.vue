@@ -99,6 +99,18 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+function onCopy(event: ClipboardEvent): void {
+  const root = container.value;
+  const selection = window.getSelection();
+  if (!root || !selection?.rangeCount || !selection.toString()) return;
+  if (!selection.anchorNode || !selection.focusNode || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return;
+  const clipboard = event.clipboardData;
+  if (!clipboard) return;
+  event.preventDefault();
+  clipboard.clearData();
+  clipboard.setData("text/plain", selection.toString());
+}
+
 function openLightbox(image: HTMLImageElement): void {
   lightboxTrigger = image;
   lightboxUri.value = image.src;
@@ -138,7 +150,7 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- renderMarkdown escapes untrusted text before adding this small tag subset. -->
-  <div ref="container" class="gl-markdown" v-html="rendered" @click="onClick" @keydown="onKeydown" />
+  <div ref="container" class="gl-markdown" v-html="rendered" @click="onClick" @keydown="onKeydown" @copy="onCopy" />
   <div v-if="lightboxUri" class="image-lightbox" role="dialog" aria-modal="true" :aria-label="`${lightboxAlt}の原寸表示`" @click.self="closeLightbox">
     <button type="button" class="lightbox-close" aria-label="画像を閉じる" @click="closeLightbox">×</button>
     <img :src="lightboxUri" :alt="lightboxAlt">
@@ -152,6 +164,8 @@ onBeforeUnmount(() => {
 .gl-markdown :deep(blockquote) { margin: var(--gl-spacing-8) 0; padding: var(--gl-spacing-4) 0 var(--gl-spacing-4) var(--gl-spacing-16); border-left: 4px solid var(--vscode-textBlockQuote-border, var(--gl-border-strong)); color: var(--gl-text-subtle); background: transparent; }
 .gl-markdown :deep(ul), .gl-markdown :deep(ol) { margin: var(--gl-spacing-8) 0; padding-left: var(--gl-spacing-24); }
 .gl-markdown :deep(li + li) { margin-top: var(--gl-spacing-2); }
+.gl-markdown :deep(pre) { max-width: 100%; margin: var(--gl-spacing-8) 0; padding: var(--gl-spacing-8) var(--gl-spacing-12); overflow: auto; border: 1px solid var(--gl-border-subtle); border-radius: var(--gl-radius-sm); color: var(--vscode-textPreformat-foreground, var(--gl-text-default)); background: var(--vscode-textPreformat-background, var(--gl-surface-subtle)); }
+.gl-markdown :deep(pre code) { display: block; padding: 0; overflow-wrap: normal; border: 0; border-radius: 0; color: inherit; background: transparent; font: var(--vscode-editor-font-size)/1.45 var(--vscode-editor-font-family); white-space: pre; }
 .gl-markdown :deep(code) { padding: 1px var(--gl-spacing-4); border: 1px solid var(--gl-border-subtle); border-radius: var(--gl-radius-sm); color: var(--gl-text-strong); background: color-mix(in srgb, var(--gl-accent-purple) 10%, var(--gl-surface-subtle)); font: .92em var(--vscode-editor-font-family); }
 .gl-markdown :deep(a) { color: var(--gl-text-link); text-decoration: underline; text-underline-offset: 2px; }
 .gl-markdown :deep(a:hover) { color: var(--gl-hover-text); }
