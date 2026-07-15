@@ -383,17 +383,35 @@ onBeforeUnmount(() => {
 });
 
 function editorHtmlToMarkdown(element: HTMLElement): string {
-  return serializeNodes(Array.from(element.childNodes)).replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  return serializeNodes(Array.from(element.childNodes))
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function serializeNodes(nodes: readonly Node[]): string {
-  return nodes.map(serializeNode).join("");
+  let output = "";
+  for (const node of nodes) {
+    const value = serializeNode(node);
+    // Chromium may represent Enter at the root of a contenteditable as a
+    // block element after a text node (`text<div>next</div>`). Add the
+    // missing boundary before that block so the two lines cannot join.
+    if (isStructuralBlock(node) && output && !output.endsWith("\n\n")) {
+      output += output.endsWith("\n") ? "\n" : "\n\n";
+    } else if (isBlockNode(node) && output && !output.endsWith("\n")) {
+      output += "\n";
+    }
+    output += value;
+  }
+  return output;
 }
 
 function serializeNode(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
   if (!(node instanceof HTMLElement)) return serializeNodes(Array.from(node.childNodes));
   const content = serializeNodes(Array.from(node.childNodes));
+  const normalizedContent = content.replace(/\r\n?/g, "\n");
   switch (node.tagName.toLowerCase()) {
     case "br": return "\n";
     case "strong":
@@ -402,8 +420,11 @@ function serializeNode(node: Node): string {
     case "i": return `_${content.trim()}_`;
     case "del":
     case "s": return `~~${content.trim()}~~`;
-    case "code": return `\`${content.trim()}\``;
-    case "pre": return `\`${content.trim()}\`\n`;
+    case "code": {
+      const code = normalizedContent.trim();
+      return code.includes("\n") ? `${renderFencedCode(code)}\n\n` : `\`${code}\``;
+    }
+    case "pre": return `${renderFencedCode(node.textContent ?? "")}\n\n`;
     case "a": {
       const href = node.getAttribute("href") ?? "";
       return /^(?:https?:\/\/|mailto:)/i.test(href) ? `[${content.trim()}](${href})` : content;
@@ -417,14 +438,29 @@ function serializeNode(node: Node): string {
         ? `![${escapeMarkdownImageAlt(alt)}](${src})`
         : "";
     }
-    case "blockquote": return `${content.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n`;
-    case "ul": return `${serializeList(node, "-")}\n`;
-    case "ol": return `${serializeList(node, "number")}\n`;
+    case "blockquote": return `${normalizedContent.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+    case "ul": return `${serializeList(node, "-")}\n\n`;
+    case "ol": return `${serializeList(node, "number")}\n\n`;
     case "li": return content.trim();
     case "p":
     case "div": return `${content.trim()}\n`;
     default: return content;
   }
+}
+
+function isBlockNode(node: Node): boolean {
+  return node instanceof HTMLElement && ["blockquote", "div", "li", "ol", "p", "pre", "ul"].includes(node.tagName.toLowerCase());
+}
+
+function isStructuralBlock(node: Node): boolean {
+  return node instanceof HTMLElement && ["blockquote", "ol", "pre", "ul"].includes(node.tagName.toLowerCase());
+}
+
+function renderFencedCode(source: string): string {
+  const code = source.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+  const longestBacktickRun = Math.max(0, ...(code.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+  return `${fence}\n${code}\n${fence}`;
 }
 
 function serializeList(list: HTMLElement, prefix: "-" | "number"): string {

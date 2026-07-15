@@ -35,6 +35,42 @@ export const EscapedPunctuation: Story = {
   }
 };
 
+export const PlainTextCopy: Story = {
+  args: { source: "**Styled** text and `code`.\n\nSecond paragraph." },
+  play: async ({ canvasElement }) => {
+    const root = canvasElement.querySelector<HTMLElement>(".gl-markdown");
+    if (!root) throw new Error("Markdown container was not rendered.");
+    const selection = window.getSelection();
+    if (!selection) throw new Error("Selection API is unavailable.");
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const clipboard = new DataTransfer();
+    const copy = new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: clipboard });
+    root.dispatchEvent(copy);
+
+    await expect(copy.defaultPrevented).toBe(true);
+    await expect(clipboard.getData("text/plain")).toContain("Styled text and code.");
+    await expect(clipboard.getData("text/html")).toBe("");
+    selection.removeAllRanges();
+  }
+};
+
+export const FencedCodeBlock: Story = {
+  args: {
+    source: "GetBumonCodeNameを、汎化したメソッドが組めるはずです。\n\n```csharp\nTValue GetCodeName<TValue>(Dictionary<int, TValue> dic, int id)\n{\n    return dic[id];\n}\n```\n\nコードブロックの中身はMarkdownとして解釈されません。"
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const code = canvas.getByText(/TValue GetCodeName/);
+    await expect(code).toBeVisible();
+    await expect(code).toHaveClass("language-csharp");
+    await expect(canvas.queryByText("```csharp", { exact: true })).toBeNull();
+  }
+};
+
 export const PrivateImageResolveAndLightbox: Story = {
   args: { source: "![Private review image](/uploads/story/private.png)" },
   render: renderPrivateMarkdown,

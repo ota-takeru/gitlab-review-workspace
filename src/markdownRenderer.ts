@@ -3,6 +3,10 @@
  * comments. Input is escaped before any markup is added, so the returned HTML
  * is safe to pass to the dedicated GlMarkdown component.
  */
+type MarkdownCodeBlock =
+  | { kind: "fenced"; marker: "`" | "~"; markerLength: number; language?: string; lines: string[] }
+  | { kind: "indented"; lines: string[] };
+
 export function renderMarkdown(source: string): string {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const output: string[] = [];
@@ -10,6 +14,7 @@ export function renderMarkdown(source: string): string {
   let listType: "ul" | "ol" | undefined;
   let listItems: string[] = [];
   let quoteLines: string[] = [];
+  let codeBlock: MarkdownCodeBlock | undefined;
 
   const flushParagraph = (): void => {
     if (!paragraph.length) return;
@@ -27,6 +32,16 @@ export function renderMarkdown(source: string): string {
     output.push(`<blockquote>${quoteLines.map(renderInline).join("<br>")}</blockquote>`);
     quoteLines = [];
   };
+  const flushCodeBlock = (): void => {
+    if (!codeBlock) return;
+    const lines = [...codeBlock.lines];
+    while (lines.at(-1) === "") lines.pop();
+    const language = codeBlock.kind === "fenced" ? codeBlock.language : undefined;
+    const className = language ? ` class="language-${escapeHtml(language)}"` : "";
+    const contents = lines.length ? `${escapeHtml(lines.join("\n"))}\n` : "";
+    output.push(`<pre><code${className}>${contents}</code></pre>`);
+    codeBlock = undefined;
+  };
   const flushBlocks = (): void => {
     flushParagraph();
     flushList();
@@ -34,6 +49,49 @@ export function renderMarkdown(source: string): string {
   };
 
   for (const line of lines) {
+    if (codeBlock?.kind === "fenced") {
+      const closingFence = new RegExp(`^\\s*${codeBlock.marker}{${codeBlock.markerLength},}\\s*$`);
+      if (closingFence.test(line)) {
+        flushCodeBlock();
+      } else {
+        codeBlock.lines.push(line);
+      }
+      continue;
+    }
+
+    if (codeBlock?.kind === "indented") {
+      if (!line.trim()) {
+        codeBlock.lines.push("");
+        continue;
+      }
+      const indentedLine = stripIndentedCode(line);
+      if (indentedLine !== undefined) {
+        codeBlock.lines.push(indentedLine);
+        continue;
+      }
+      flushCodeBlock();
+    }
+
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      flushBlocks();
+      codeBlock = {
+        kind: "fenced",
+        marker: fence[1][0] as "`" | "~",
+        markerLength: fence[1].length,
+        language: normalizeCodeLanguage(fence[2]),
+        lines: []
+      };
+      continue;
+    }
+
+    const indentedLine = stripIndentedCode(line);
+    if (indentedLine !== undefined) {
+      flushBlocks();
+      codeBlock = { kind: "indented", lines: [indentedLine] };
+      continue;
+    }
+
     const quote = line.match(/^>\s?(.*)$/);
     if (quote) {
       flushParagraph();
@@ -64,7 +122,19 @@ export function renderMarkdown(source: string): string {
     paragraph.push(line);
   }
   flushBlocks();
+  flushCodeBlock();
   return output.join("");
+}
+
+function stripIndentedCode(line: string): string | undefined {
+  if (line.startsWith("\t")) return line.slice(1);
+  if (line.startsWith("    ")) return line.slice(4);
+  return undefined;
+}
+
+function normalizeCodeLanguage(info: string): string | undefined {
+  const language = info.trim().split(/\s+/, 1)[0] ?? "";
+  return /^[A-Za-z0-9][A-Za-z0-9+_.-]*$/.test(language) ? language : undefined;
 }
 
 function renderInline(source: string): string {
