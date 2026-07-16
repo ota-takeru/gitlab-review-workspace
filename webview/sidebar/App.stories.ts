@@ -102,6 +102,34 @@ const threadState: SidebarViewState = {
   }
 };
 
+const ordinaryCommentState: SidebarViewState = {
+  ...state,
+  threadDetails: [{
+    id: "comment-1",
+    resolved: false,
+    resolvable: false,
+    comments: [{
+      id: "note-1",
+      author: "reviewer",
+      body: "This is an ordinary merge request comment.",
+      createdAt: "2026-07-13T10:00:00.000Z"
+    }]
+  }],
+  overview: {
+    ...state.overview,
+    threads: [{
+      id: "comment-1",
+      resolved: false,
+      resolvable: false,
+      commentCount: 1,
+      authors: [{ name: "reviewer" }],
+      lastComment: { author: "reviewer", createdAt: "2026-07-13T10:00:00.000Z" },
+      searchText: "reviewer\nThis is an ordinary merge request comment."
+    }],
+    totalComments: 1
+  }
+};
+
 const manyFilesState: SidebarViewState = {
   ...state,
   overview: {
@@ -216,25 +244,40 @@ export const DistinctStatusAndActions: Story = {
   }
 };
 
+export const OrdinaryCommentHasNoReviewStatus: Story = {
+  render: () => renderState(ordinaryCommentState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("This is an ordinary merge request comment.")).toBeVisible();
+    await expect(canvas.queryByText("Open", { exact: true })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Resolve discussion" })).toBeNull();
+  }
+};
+
 export const SearchReviewComments: Story = {
   render: () => renderState({ ...threadState, threadDetails: [] }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.queryByRole("searchbox", { name: "Search reviews in this merge request" })).toBeNull();
+    await expect(canvas.queryByRole("searchbox", { name: "Search review comment text and authors" })).toBeNull();
     await userEvent.click(canvas.getByRole("button", { name: "Search review comments" }));
-    const search = canvas.getByRole("searchbox", { name: "Search reviews in this merge request" });
+    const search = canvas.getByRole("searchbox", { name: "Search review comment text and authors" });
     await expect(canvasElement.ownerDocument.activeElement).toBe(search);
     await userEvent.type(search, "simplify");
     await expect(canvas.getByText("1 of 1 threads")).toBeVisible();
     await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
     await userEvent.clear(search);
-    await userEvent.type(search, "missing text");
+    await userEvent.type(search, "reviewer");
+    await expect(canvas.getByText("1 of 1 threads")).toBeVisible();
+    await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
+    await userEvent.clear(search);
+    await userEvent.type(search, "src/review.ts");
     await expect(canvas.getByText("No review comments found")).toBeVisible();
+    await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(0);
     await userEvent.click(canvas.getByRole("button", { name: "Clear review search" }));
     await expect(search).toHaveValue("");
     await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
     await userEvent.click(canvas.getByRole("button", { name: "Close review search" }));
-    await expect(canvas.queryByRole("searchbox", { name: "Search reviews in this merge request" })).toBeNull();
+    await expect(canvas.queryByRole("searchbox", { name: "Search review comment text and authors" })).toBeNull();
   }
 };
 

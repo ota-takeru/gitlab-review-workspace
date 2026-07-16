@@ -17,6 +17,7 @@ function activate(): void {
 
 <template>
   <button
+    v-if="resolvable"
     class="thread-status-action"
     :class="{ 'has-action': resolvable && !pending, resolved }"
     type="button"

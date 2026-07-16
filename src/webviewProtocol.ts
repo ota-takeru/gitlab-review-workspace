@@ -74,7 +74,11 @@ export interface CommitDiffViewState {
   fullFileError?: string;
 }
 
-export type HostMessage<T> = { type: "state"; state: T } | CommentImageHostMessage;
+export type HostMessage<T, TExtra = never> =
+  | { type: "state"; state: T }
+  | CommentImageHostMessage
+  | TExtra;
+export type SidebarHostMessage = { type: "revealThread"; threadId: string };
 export type ReadyMessage = { type: "ready" };
 export type CommitDiffMessage = ReadyMessage | { type: "loadFullFile" };
 

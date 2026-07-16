@@ -2,7 +2,7 @@
   "name": "gitlab-review-workspace",
   "displayName": "GitLab Review Workspace",
   "description": "GitLab merge request review experience with threaded comments, review diffs, and editable local review drafts.",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "publisher": "ota-takeru",
   "repository": {
     "type": "git",
@@ -22,6 +22,8 @@
   "activationEvents": [
     "onView:gitlabReview.sidebar",
     "onCommand:gitlabReview.openFile",
+    "onCommand:gitlabReview.openFileNative",
+    "onCommand:gitlabReview.openFileWebview",
     "onCommand:gitlabReview.login",
     "onCommand:gitlabReview.refreshAuth",
     "onCommand:gitlabReview.refreshReview"
@@ -54,6 +56,52 @@
         "title": "GitLab Review: Open Review File"
       },
       {
+        "command": "gitlabReview.openFileNative",
+        "title": "GitLab Review: Open Review File in VS Code Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "gitlabReview.openFileWebview",
+        "title": "GitLab Review: Open Review File in Legacy Viewer"
+      },
+      {
+        "command": "gitlabReview.nativeComment.submit",
+        "title": "Comment"
+      },
+      {
+        "command": "gitlabReview.nativeComment.uploadAndSubmit",
+        "title": "Attach Image and Comment",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "gitlabReview.nativeComment.resolve",
+        "title": "Resolve Discussion",
+        "icon": "$(check)"
+      },
+      {
+        "command": "gitlabReview.nativeComment.reopen",
+        "title": "Reopen Discussion",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "gitlabReview.nativeComment.edit",
+        "title": "Edit Comment",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "gitlabReview.nativeComment.saveEdit",
+        "title": "Save Comment"
+      },
+      {
+        "command": "gitlabReview.nativeComment.cancelEdit",
+        "title": "Cancel"
+      },
+      {
+        "command": "gitlabReview.nativeComment.revealInSidebar",
+        "title": "Show Discussion in Sidebar",
+        "icon": "$(layout-sidebar-left)"
+      },
+      {
         "command": "gitlabReview.login",
         "title": "GitLab Review: Log In with glab"
       },
@@ -66,6 +114,63 @@
         "title": "GitLab Review: Refresh Merge Request"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "gitlabReview.openFileNative",
+          "when": "activeWebviewPanelId == gitlabReview.fileReview",
+          "group": "navigation@10"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "gitlabReview.nativeComment.submit",
+          "when": "commentController == gitlabReview.nativeComments",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabReview.nativeComment.uploadAndSubmit",
+          "when": "commentController == gitlabReview.nativeComments",
+          "group": "inline@2"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "gitlabReview.nativeComment.resolve",
+          "when": "commentController == gitlabReview.nativeComments && commentThread == gitlabReview.native.unresolved",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabReview.nativeComment.reopen",
+          "when": "commentController == gitlabReview.nativeComments && commentThread == gitlabReview.native.resolved",
+          "group": "inline@1"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "gitlabReview.nativeComment.edit",
+          "when": "commentController == gitlabReview.nativeComments && comment == gitlabReview.native.editable",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabReview.nativeComment.revealInSidebar",
+          "when": "commentController == gitlabReview.nativeComments",
+          "group": "inline@2"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "gitlabReview.nativeComment.cancelEdit",
+          "when": "commentController == gitlabReview.nativeComments",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabReview.nativeComment.saveEdit",
+          "when": "commentController == gitlabReview.nativeComments",
+          "group": "inline@2"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -102,11 +207,10 @@
     "test": "npm run compile && node --test ./out/test/*.test.js"
   },
   "dependencies": {
-    "@gitlab/svgs": "^3.163.0",
-    "diff": "^5.2.0",
-    "vue": "^3.5.17"
+    "diff": "^5.2.0"
   },
   "devDependencies": {
+    "@gitlab/svgs": "^3.163.0",
     "@storybook/addon-a11y": "^10.5.0",
     "@storybook/addon-docs": "^10.5.0",
     "@storybook/addon-vitest": "^10.5.0",
@@ -122,6 +226,7 @@
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.10",
+    "vue": "^3.5.40",
     "vue-tsc": "^2.2.10"
   }
 }

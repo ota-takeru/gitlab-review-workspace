@@ -141,6 +141,23 @@ const editState: ReviewFileViewState = {
   canEditLocally: true
 };
 
+const ordinaryCommentEditState: ReviewFileViewState = {
+  ...editState,
+  viewModel: {
+    ...editState.viewModel!,
+    threads: [{
+      ...thread,
+      id: "comment-1",
+      resolvable: false,
+      comments: [{
+        ...thread.comments[0]!,
+        id: "note-1",
+        body: "This is an ordinary file comment."
+      }]
+    }]
+  }
+};
+
 const largeWindowState: ReviewFileViewState = {
   ...state,
   viewModel: {
@@ -241,6 +258,15 @@ export const EditModeShowsAllReplyBodies: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Could we make this branch easier to follow?")).toBeVisible();
     await expect(canvas.getByText("I agree with this suggestion.")).toBeVisible();
+  }
+};
+
+export const EditModeOrdinaryCommentHasNoReviewStatus: Story = {
+  render: () => renderState(ordinaryCommentEditState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("This is an ordinary file comment.")).toBeVisible();
+    await expect(canvas.queryByText("Open", { exact: true })).toBeNull();
   }
 };
 

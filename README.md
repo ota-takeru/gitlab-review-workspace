@@ -13,6 +13,7 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 - 新しいpushを検出し、前回のheadから追加された変更だけを比較
 - コミット差分もレビュー差分と同じファイルビューアで選択・コメント
 - 差分行のクリック・ドラッグ選択からディスカッションを作成
+- VS Code標準diff editorでMR差分を開き、Comment APIからディスカッションを作成・返信
 - コメントの返信、編集、Resolve/Reopen
 - MR内のレビューコメントを本文・投稿者・ファイルパスで検索
 - GitLab Todo通知から対象MRへ移動
@@ -24,7 +25,12 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 
 - **Sidebar**: MR概要、変更ファイル、コミット、レビュースレッド、通知
 - **Review file panel**: MR差分・コミット差分、ローカル差分、インラインディスカッション、ローカル編集
+- **VS Code diff editor（試験導入）**: 標準のコードナビゲーションとComment APIによるインラインディスカッション
 - **Branch file editor**: GitLab上のブランチファイルを読み取り専用で表示
+
+サイドバーの変更ファイルまたはレビュースレッドを選ぶと、標準diff editorで対象ファイルを開き、スレッドの行までスクロールします。従来のReview file panelも残してあり、`GitLab Review: Open Review File in Legacy Viewer`から開けます。
+
+標準diff editorのコメント入力ではMarkdownを利用できます。画像は入力欄への貼り付けでGitLabへアップロードしてMarkdownを挿入するほか、`Attach Image and Comment`でファイルを選択し、現在の本文と画像をまとめて投稿できます。
 
 ## 必要環境
 
@@ -97,6 +103,7 @@ src/
   gitlabApi.ts            glab経由のGitLab APIアクセス
   sidebarProvider.ts      Sidebar Webviewのホスト
   reviewFilePanel.ts      レビューファイルパネルのホスト
+  nativeReviewEditor.ts   VS Code標準diffとComment APIのホスト
   commitDiffPanel.ts      コミット差分パネルのホスト
   webviewProtocol.ts      HostとWebview間のメッセージ契約
   test/                   Nodeテスト
@@ -124,6 +131,7 @@ flowchart LR
   API --> Glab["glab CLI"]
   Glab --> GitLab["GitLab API"]
   Store --> Protocol["Typed webview messages"]
+  Store --> Native["VS Code diff / Comment API"]
   Protocol --> Sidebar["Sidebar Vue app"]
   Protocol --> Review["Review file Vue app (MR / commit diff)"]
 ```
