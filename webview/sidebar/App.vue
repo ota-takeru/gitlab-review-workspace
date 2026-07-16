@@ -12,7 +12,7 @@ import {
 } from "../../src/webviewViewModels";
 import type { MyWorkMergeRequest } from "../../src/myWorkTypes";
 import type { ReviewComment, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
-import type { HostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
+import type { HostMessage, SidebarHostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlAvatarGroup from "../common/components/GlAvatarGroup.vue";
 import GlButton from "../common/components/GlButton.vue";
@@ -66,6 +66,7 @@ const resolvedByThread = new Map<string, boolean>();
 const requestedThreadDetails = new Set<string>();
 let loadedMrKey = "";
 let readyRetry: number | undefined;
+let pendingRevealThreadId: string | undefined;
 
 const overview = computed(() => model.value?.overview);
 const threadDetailsById = computed(() => new Map((model.value?.threadDetails ?? []).map((thread) => [thread.id, thread])));
@@ -90,11 +91,7 @@ const filteredThreads = computed(() => {
   const threads = overview.value?.threads ?? [];
   const query = normalizedThreadSearchQuery.value;
   if (!query) return threads;
-  return threads.filter((thread) => [
-    thread.filePath ?? "MR overview",
-    thread.authors.map((author) => author.name).join(" "),
-    thread.searchText
-  ].join("\n").toLocaleLowerCase().includes(query));
+  return threads.filter((thread) => thread.searchText.toLocaleLowerCase().includes(query));
 });
 const filteredCommits = computed(() => {
   const commits = overview.value?.commits ?? [];
@@ -261,6 +258,23 @@ function threadSearchExcerpt(thread: ReviewThreadSummary): string {
   const end = Math.min(text.length, matchIndex + query.length + 60);
   return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
+async function revealThread(threadId: string): Promise<void> {
+  pendingRevealThreadId = threadId;
+  const thread = overview.value?.threads.find((candidate) => candidate.id === threadId);
+  if (!thread || activeTab.value !== "review") return;
+  threadSearchQuery.value = "";
+  threadSearchOpen.value = false;
+  collapsedThreads[collapseKey(thread)] = false;
+  requestedThreadDetails.add(thread.id);
+  persist();
+  post({ type: "setThreadExpanded", threadId: thread.id, expanded: true });
+  await nextTick();
+  const element = Array.from(document.querySelectorAll<HTMLElement>("[data-review-thread-id]"))
+    .find((candidate) => candidate.dataset.reviewThreadId === threadId);
+  if (!element) return;
+  pendingRevealThreadId = undefined;
+  element.scrollIntoView({ behavior: "smooth", block: "center" });
+}
 async function toggleThreadSearch(): Promise<void> {
   if (threadSearchOpen.value) {
     threadSearchQuery.value = "";
@@ -360,8 +374,12 @@ function setThreadSort(event: Event): void {
     post({ type: "setThreadSort", order: value satisfies ReviewThreadSortOrder });
   }
 }
-function receiveState(event: MessageEvent<HostMessage<SidebarViewState>>): void {
+function receiveState(event: MessageEvent<HostMessage<SidebarViewState, SidebarHostMessage>>): void {
   const message = event.data;
+  if (message.type === "revealThread") {
+    void revealThread(message.threadId);
+    return;
+  }
   if (handleCommentImageMessage(message)) return;
   if (message.type !== "state") return;
   stopReadyRetry();
@@ -398,6 +416,7 @@ function receiveState(event: MessageEvent<HostMessage<SidebarViewState>>): void 
   } else if (!isCommitDiffForSelection(message.state.commitDiff, mrKey.value, normalized.commitId)) {
     post({ type: "toggleCommit", commitId: normalized.commitId });
   }
+  if (pendingRevealThreadId) void revealThread(pendingRevealThreadId);
 }
 function requestInitialState(): void { post({ type: "ready" }); }
 function stopReadyRetry(): void {
@@ -692,8 +711,8 @@ onBeforeUnmount(() => {
             v-model="threadSearchQuery"
             class="gl-input thread-search-input"
             type="search"
-            aria-label="Search reviews in this merge request"
-            placeholder="Search review comments…"
+            aria-label="Search review comment text and authors"
+            placeholder="Search comment text or authors…"
             @keydown.esc="closeThreadSearchFromKeyboard"
           />
           <GlButton
@@ -784,6 +803,7 @@ onBeforeUnmount(() => {
           <article
             v-for="thread in filteredThreads"
             :key="thread.id"
+            :data-review-thread-id="thread.id"
             class="thread"
             :class="{ resolved: thread.resolved, collapsed: isThreadCollapsed(thread) }"
           >

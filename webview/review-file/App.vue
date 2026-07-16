@@ -638,7 +638,7 @@ onBeforeUnmount(() => {
         >
           <div class="rail-thread-head">
             <span>Line {{ thread.line ?? '—' }}</span>
-            <span class="thread-state">
+            <span v-if="thread.resolvable !== false" class="thread-state">
               <GlIcon :name="thread.resolved ? 'check-circle' : 'comments'" :size="12" />
               {{ thread.resolved ? 'Resolved' : 'Open' }}
             </span>

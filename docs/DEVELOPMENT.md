@@ -54,6 +54,7 @@ Do not modify the bundled `media/webview/*.js` or `media/webview/style.css` dire
 | State, caching, optimistic updates | `src/reviewStore.ts` | `src/reviewTypes.ts` |
 | Sidebar behavior | `src/sidebarProvider.ts` | `webview/sidebar/App.vue` |
 | Review file behavior | `src/reviewFilePanel.ts` | `webview/review-file/App.vue` |
+| Native diff and comments | `src/nativeReviewEditor.ts` | `src/nativeReviewUtils.ts`, `package.json` comment menus |
 | Commit diff behavior | `src/commitDiffPanel.ts` | `webview/commit-diff/App.vue` |
 | Host/Webview messages | `src/webviewProtocol.ts` | all senders and receivers |
 | Shared UI/theme | `webview/common/` | all three Webview apps |

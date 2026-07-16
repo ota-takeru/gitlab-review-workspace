@@ -41,4 +41,11 @@ export const Resolved: Story = {
   }
 };
 export const Pending: Story = { args: { resolved: false, pending: true } };
-export const NotResolvable: Story = { args: { resolved: false, resolvable: false } };
+export const NotResolvable: Story = {
+  args: { resolved: false, resolvable: false },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("button")).toBeNull();
+    await expect(canvas.queryByText("Open", { exact: true })).toBeNull();
+  }
+};

@@ -13,6 +13,7 @@ import type {
   CommitDiffState,
   HostMessage,
   SidebarMessage,
+  SidebarHostMessage,
   SidebarViewState
 } from "./webviewProtocol";
 
@@ -103,6 +104,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
   dispose(): void {
     this.stopMyWorkPolling();
+  }
+
+  async revealThread(threadId: string): Promise<void> {
+    if (!this.store.getOverview().threads.some((thread) => thread.id === threadId)) return;
+    this.expandedThreadIds.add(threadId);
+    await this.setSidebarTab("review");
+    await vscode.commands.executeCommand("gitlabReview.sidebar.focus");
+    this.pushUpdate();
+    void this.view?.webview.postMessage(
+      { type: "revealThread", threadId } satisfies HostMessage<SidebarViewState, SidebarHostMessage>
+    );
   }
 
   private pushUpdate(): void {
