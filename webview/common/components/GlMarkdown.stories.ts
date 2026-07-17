@@ -77,12 +77,12 @@ export const PrivateImageResolveAndLightbox: Story = {
   beforeEach: () => installCommentImageHostMock({ resolve: () => ({ ok: true }) }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const image = await canvas.findByRole("button", { name: "Private review imageを原寸表示" });
+    const image = await canvas.findByRole("button", { name: "View Private review image at full size" });
     await expect(image).toHaveAttribute("src");
     await userEvent.click(image);
-    await expect(await within(document.body).findByRole("dialog", { name: "Private review imageの原寸表示" })).toBeVisible();
+    await expect(await within(document.body).findByRole("dialog", { name: "View Private review image at full size" })).toBeVisible();
     await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "Private review imageの原寸表示" })).toBeNull());
+    await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "View Private review image at full size" })).toBeNull());
   }
 };
 
@@ -103,6 +103,6 @@ export const ResolveFailureRetryAndGitLabFallback: Story = {
     await expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
 
     await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
-    await expect(await canvas.findByRole("button", { name: "Unavailable imageを原寸表示" })).toHaveAttribute("src");
+    await expect(await canvas.findByRole("button", { name: "View Unavailable image at full size" })).toHaveAttribute("src");
   }
 };

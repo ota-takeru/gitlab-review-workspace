@@ -225,7 +225,7 @@ export const SideBySideDiff: Story = {
   render: () => renderState(sideBySideState),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("変更前")).toBeVisible();
+    await expect(canvas.getByText("Before")).toBeVisible();
     await expect(canvas.getByText("Merge request")).toBeVisible();
     await expect(canvas.getByText("const answer = 41;")).toBeVisible();
     await expect(canvas.getByText("const answer = 42;")).toBeVisible();
@@ -258,6 +258,38 @@ export const EditModeShowsAllReplyBodies: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Could we make this branch easier to follow?")).toBeVisible();
     await expect(canvas.getByText("I agree with this suggestion.")).toBeVisible();
+  }
+};
+
+export const EditSaveFailureKeepsDraft: Story = {
+  render: () => renderState(editState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "File contents" });
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "const answer = 43;");
+    await userEvent.click(canvas.getByRole("button", { name: "Save local changes" }));
+    await expect(editor).toHaveAttribute("readonly");
+
+    const storyWindow = canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] };
+    const messages = storyWindow.__storybookVsCodeMessages ?? [];
+    const request = [...messages].reverse().find((message): message is { type: "saveLocalEdit"; requestId: string } => (
+      Boolean(message) && typeof message === "object" && (message as { type?: string }).type === "saveLocalEdit"
+    ));
+    await expect(request).toBeDefined();
+    const StoryMessageEvent = (storyWindow as unknown as { MessageEvent: typeof MessageEvent }).MessageEvent;
+    storyWindow.dispatchEvent(new StoryMessageEvent("message", {
+      data: {
+        type: "localEditSaveResult",
+        requestId: request!.requestId,
+        ok: false,
+        errorMessage: "Workspace storage is unavailable."
+      }
+    }));
+
+    await expect(await canvas.findByRole("alert")).toHaveTextContent("Workspace storage is unavailable.");
+    await expect(editor).toHaveValue("const answer = 43;");
+    await expect(editor).not.toHaveAttribute("readonly");
   }
 };
 

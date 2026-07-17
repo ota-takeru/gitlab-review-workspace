@@ -79,32 +79,32 @@ const emptyState = computed<EmptyState | undefined>(() => {
   if (file.tooLarge) {
     return {
       icon: "warning",
-      title: "差分を表示できません",
-      description: "この差分は大きすぎるため、GitLab から内容が返されませんでした。"
+      title: "Unable to display diff",
+      description: "GitLab did not return this diff because it is too large."
     };
   }
   if (file.collapsed) {
     return {
       icon: "information",
-      title: "差分は折りたたまれています",
-      description: "この差分は GitLab 側で折りたたまれています。"
+      title: "Diff is collapsed",
+      description: "This diff is collapsed on GitLab."
     };
   }
   if (file.diff.length === 0) {
     return {
       icon: "file",
-      title: "表示できる変更はありません",
-      description: "このファイルには表示できる patch がありません。"
+      title: "No displayable changes",
+      description: "This file has no displayable patch."
     };
   }
   return undefined;
 });
 
 const STATUS_LABELS: Record<CommitDiffStatus, string> = {
-  new: "追加",
-  deleted: "削除",
-  renamed: "名前変更",
-  modified: "変更"
+  new: "Added",
+  deleted: "Deleted",
+  renamed: "Renamed",
+  modified: "Modified"
 };
 
 function receiveMessage(event: MessageEvent<HostMessage<CommitDiffViewState>>): void {
@@ -147,10 +147,10 @@ onBeforeUnmount(() => {
 <template>
   <main class="commit-diff-app">
     <p v-if="!state" class="loading-state" role="status">
-      差分を読み込んでいます…
+      Loading diff…
     </p>
 
-    <section v-else class="diff-card" :aria-label="`${displayPath} のコミット差分`">
+    <section v-else class="diff-card" :aria-label="`${displayPath} commit diff`">
       <GlDiffHeader
         :path="displayPath"
         :status="state.file.status"
@@ -166,14 +166,14 @@ onBeforeUnmount(() => {
       </GlDiffHeader>
 
       <div class="diff-toolbar">
-        <span class="scope-label">表示範囲</span>
+        <span class="scope-label">Display range</span>
         <GlDiffScopeToggle
           :model-value="scope"
           :loading="Boolean(state.fullFileLoading)"
           @update:model-value="setScope"
         />
-        <span v-if="state.fullFileLoading" class="scope-status" role="status">ファイル全体を読み込んでいます…</span>
-        <button v-else-if="state.fullFileError" class="scope-retry" type="button" @click="setScope('file')">再読み込み</button>
+        <span v-if="state.fullFileLoading" class="scope-status" role="status">Loading entire file…</span>
+        <button v-else-if="state.fullFileError" class="scope-retry" type="button" @click="setScope('file')">Reload full file</button>
       </div>
 
       <div v-if="emptyState" role="status">
@@ -188,18 +188,18 @@ onBeforeUnmount(() => {
         <GlEmptyState
           v-if="state.fullFileError"
           icon="warning"
-          title="ファイル全体を表示できません"
+          title="Entire file unavailable"
           :description="state.fullFileError"
         />
-        <p v-else>ファイル全体を読み込んでいます…</p>
+        <p v-else>Loading entire file…</p>
       </div>
 
       <GlDiffSideBySideTable
         v-else
         :rows="sideBySideLines"
-        left-label="変更前"
-        right-label="変更後"
-        aria-label="コミットのファイル差分"
+        left-label="Before"
+        right-label="After"
+        aria-label="Commit file diff"
       />
     </section>
   </main>

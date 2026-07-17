@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ReviewCommit, ReviewState } from "../reviewTypes";
-import { detectReviewUpdateRange } from "../reviewUpdateUtils";
+import { detectReviewUpdateRange, mergeReviewUpdateRanges } from "../reviewUpdateUtils";
 
 function review(headSha: string, commitIds: string[], projectId = "101", iid = 42): ReviewState {
   const commits: ReviewCommit[] = commitIds.map((id) => ({
@@ -54,5 +54,35 @@ test("detectReviewUpdateRange handles a force-pushed previous head", () => {
   assert.equal(
     detectReviewUpdateRange(review("old", ["old"]), review("new", ["new"]))?.commitCount,
     1
+  );
+});
+
+test("mergeReviewUpdateRanges keeps the full unreviewed push range", () => {
+  assert.deepEqual(
+    mergeReviewUpdateRanges(
+      {
+        projectId: "101",
+        mergeRequestIid: 42,
+        fromSha: "commit-1",
+        toSha: "commit-2",
+        commitCount: 1,
+        changedPaths: ["src/a.ts"]
+      },
+      {
+        projectId: "101",
+        mergeRequestIid: 42,
+        fromSha: "commit-2",
+        toSha: "commit-4",
+        commitCount: 2
+      }
+    ),
+    {
+      projectId: "101",
+      mergeRequestIid: 42,
+      fromSha: "commit-1",
+      toSha: "commit-4",
+      commitCount: 3,
+      changedPaths: undefined
+    }
   );
 });

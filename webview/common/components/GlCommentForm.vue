@@ -38,6 +38,7 @@ let pickerRange: Range | undefined;
 let plainTextPasteRequested = false;
 const active = computed(() => focused.value || (model.value?.length ?? 0) > 0);
 const uploadBlocked = computed(() => pendingImages.value.some((item) => item.status !== "uploaded"));
+const canSubmit = computed(() => !uploadBlocked.value && Boolean(model.value?.trim()));
 
 function resizeEditor(): void {
   void nextTick(() => {
@@ -308,7 +309,7 @@ function formatSelection(format: string): void {
       runCommand("unlink");
       return;
     }
-    const url = window.prompt("リンクURL", "https://");
+    const url = window.prompt("Link URL", "https://");
     if (url) runCommand("createLink", url);
     return;
   }
@@ -330,7 +331,7 @@ function keydown(event: KeyboardEvent): void {
     plainTextPasteRequested = true;
   } else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
-    if (!uploadBlocked.value) emit("submit");
+    if (canSubmit.value) emit("submit");
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
     event.preventDefault();
     formatSelection("bold");
@@ -483,25 +484,25 @@ function escapeMarkdownImageAlt(value: string): string {
     @focusout="onFocusOut"
     @dragover.prevent
     @drop="dropImage"
-    @submit.prevent="!uploadBlocked && emit('submit')"
+    @submit.prevent="canSubmit && emit('submit')"
   >
-    <div v-if="active" class="markdown-toolbar" role="toolbar" aria-label="Markdown書式">
+    <div v-if="active" class="markdown-toolbar" role="toolbar" aria-label="Markdown formatting">
       <span class="toolbar-group">
-        <GlIconButton icon="bold" label="太字" size="small" :class="{ active: isFormatActive('bold') }" :aria-pressed="isFormatActive('bold')" @mousedown.prevent @click="formatSelection('bold')" />
-        <GlIconButton icon="italic" label="斜体" size="small" :class="{ active: isFormatActive('italic') }" :aria-pressed="isFormatActive('italic')" @mousedown.prevent @click="formatSelection('italic')" />
-        <GlIconButton icon="strikethrough" label="取り消し線" size="small" :class="{ active: isFormatActive('strikethrough') }" :aria-pressed="isFormatActive('strikethrough')" @mousedown.prevent @click="formatSelection('strikethrough')" />
+        <GlIconButton icon="bold" label="Bold" size="small" :class="{ active: isFormatActive('bold') }" :aria-pressed="isFormatActive('bold')" @mousedown.prevent @click="formatSelection('bold')" />
+        <GlIconButton icon="italic" label="Italic" size="small" :class="{ active: isFormatActive('italic') }" :aria-pressed="isFormatActive('italic')" @mousedown.prevent @click="formatSelection('italic')" />
+        <GlIconButton icon="strikethrough" label="Strikethrough" size="small" :class="{ active: isFormatActive('strikethrough') }" :aria-pressed="isFormatActive('strikethrough')" @mousedown.prevent @click="formatSelection('strikethrough')" />
       </span>
       <span class="toolbar-group">
-        <GlIconButton icon="code" label="コード" size="small" :class="{ active: isFormatActive('inline-code') }" :aria-pressed="isFormatActive('inline-code')" @mousedown.prevent @click="formatSelection('inline-code')" />
-        <GlIconButton icon="link" label="リンク" size="small" :class="{ active: isFormatActive('link') }" :aria-pressed="isFormatActive('link')" @mousedown.prevent @click="formatSelection('link')" />
+        <GlIconButton icon="code" label="Code" size="small" :class="{ active: isFormatActive('inline-code') }" :aria-pressed="isFormatActive('inline-code')" @mousedown.prevent @click="formatSelection('inline-code')" />
+        <GlIconButton icon="link" label="Link" size="small" :class="{ active: isFormatActive('link') }" :aria-pressed="isFormatActive('link')" @mousedown.prevent @click="formatSelection('link')" />
       </span>
       <span class="toolbar-group">
-        <GlIconButton icon="quote" label="引用" size="small" :class="{ active: isFormatActive('quote') }" :aria-pressed="isFormatActive('quote')" @mousedown.prevent @click="formatSelection('quote')" />
-        <GlIconButton icon="list" label="箇条書き" size="small" :class="{ active: isFormatActive('bulleted-list') }" :aria-pressed="isFormatActive('bulleted-list')" @mousedown.prevent @click="formatSelection('bulleted-list')" />
-        <GlIconButton icon="list-numbered" label="番号付きリスト" size="small" :class="{ active: isFormatActive('numbered-list') }" :aria-pressed="isFormatActive('numbered-list')" @mousedown.prevent @click="formatSelection('numbered-list')" />
+        <GlIconButton icon="quote" label="Quote" size="small" :class="{ active: isFormatActive('quote') }" :aria-pressed="isFormatActive('quote')" @mousedown.prevent @click="formatSelection('quote')" />
+        <GlIconButton icon="list" label="Bulleted list" size="small" :class="{ active: isFormatActive('bulleted-list') }" :aria-pressed="isFormatActive('bulleted-list')" @mousedown.prevent @click="formatSelection('bulleted-list')" />
+        <GlIconButton icon="list-numbered" label="Numbered list" size="small" :class="{ active: isFormatActive('numbered-list') }" :aria-pressed="isFormatActive('numbered-list')" @mousedown.prevent @click="formatSelection('numbered-list')" />
       </span>
       <span class="toolbar-group">
-        <GlIconButton icon="upload" label="画像をアップロード" size="small" @mousedown.prevent @click="openImagePicker" />
+        <GlIconButton icon="upload" label="Upload image" size="small" @mousedown.prevent @click="openImagePicker" />
       </span>
     </div>
     <div
@@ -533,7 +534,7 @@ function escapeMarkdownImageAlt(value: string): string {
     <footer v-if="active">
       <span class="hint">Ctrl/Cmd + Enter</span>
       <GlButton v-if="cancelLabel" size="small" @click="emit('cancel')">{{ cancelLabel }}</GlButton>
-      <GlButton type="submit" variant="confirm" size="small" icon="paper-airplane" :disabled="uploadBlocked">{{ submitLabel }}</GlButton>
+      <GlButton type="submit" variant="confirm" size="small" icon="paper-airplane" :disabled="!canSubmit">{{ submitLabel }}</GlButton>
     </footer>
   </form>
 </template>

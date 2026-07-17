@@ -51,8 +51,8 @@ export const SideBySideDiff: Story = {
   }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("変更前")).toBeVisible();
-    await expect(canvas.getByText("変更後")).toBeVisible();
+    await expect(canvas.getByText("Before")).toBeVisible();
+    await expect(canvas.getByText("After")).toBeVisible();
     await expect(canvas.getByText("const answer = 41;")).toBeVisible();
     await expect(canvas.getByText("const answer = 42;")).toBeVisible();
   }

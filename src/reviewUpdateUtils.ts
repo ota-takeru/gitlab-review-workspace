@@ -23,3 +23,21 @@ export function detectReviewUpdateRange(
     commitCount
   };
 }
+
+export function mergeReviewUpdateRanges(
+  previous: ReviewUpdateRange | undefined,
+  next: ReviewUpdateRange
+): ReviewUpdateRange {
+  if (!previous
+      || previous.projectId !== next.projectId
+      || previous.mergeRequestIid !== next.mergeRequestIid
+      || previous.toSha !== next.fromSha) {
+    return next;
+  }
+  return {
+    ...next,
+    fromSha: previous.fromSha,
+    commitCount: previous.commitCount + next.commitCount,
+    changedPaths: undefined
+  };
+}

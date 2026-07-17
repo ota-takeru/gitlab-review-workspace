@@ -22,7 +22,7 @@ export const Normal: Story = {
     await expect(canvas.getByRole("heading", { name: "My work" })).toBeVisible();
     await expect(canvas.getByText("Action required")).toBeVisible();
     await userEvent.tab();
-    await expect(canvas.getByRole("button", { name: "My workを更新" })).toHaveFocus();
+    await expect(canvas.getByRole("button", { name: "Refresh My work" })).toHaveFocus();
   }
 };
 

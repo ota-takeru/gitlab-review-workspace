@@ -3,8 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 
 import { buildSideBySideRows } from "../../src/diffUtils";
 import type { DiffSideBySideRow } from "../../src/diffUtils";
 import { reviewThreadAuthors } from "../../src/reviewTreeUtils";
-import type { ReviewComment, ReviewLine, ReviewThread } from "../../src/reviewTypes";
-import type { HostMessage, ReviewFileMessage, ReviewFileViewState } from "../../src/webviewProtocol";
+import type { ReviewComment, ReviewLine, ReviewSubmissionMode, ReviewThread } from "../../src/reviewTypes";
+import type {
+  HostMessage,
+  ReviewFileHostMessage,
+  ReviewFileMessage,
+  ReviewFileViewState
+} from "../../src/webviewProtocol";
 import {
   formatRelativeReplyTime,
   reconcileThreadCollapsed,
@@ -42,12 +47,15 @@ interface PersistedReviewFileState {
   localEditDraft?: string;
   collapsedThreads?: Record<string, boolean>;
   diffScope?: GlDiffScope;
+  submissionMode?: ReviewSubmissionMode;
 }
 
 const restored = (vscode.getState() ?? {}) as PersistedReviewFileState;
 const state = shallowRef<ReviewFileViewState>();
 const editor = ref<HTMLTextAreaElement>();
 const localEditText = ref(restored.localEditDraft);
+const localEditSaving = ref(false);
+const localEditSaveError = ref<string>();
 const editDrafts = ref<Record<string, string>>({ ...restored.editDrafts });
 const editingComments = ref<string[]>([...(restored.editingComments ?? Object.keys(editDrafts.value))]);
 const replyDrafts = ref<Record<string, string>>({ ...restored.replyDrafts });
@@ -55,12 +63,14 @@ const selectedRange = ref(restored.selectedRange);
 const rangeComposer = ref(restored.rangeComposer);
 const collapsedThreads = ref<Record<string, boolean>>({ ...restored.collapsedThreads });
 const diffScope = ref<GlDiffScope>(restored.diffScope ?? "changes");
+const submissionMode = ref<ReviewSubmissionMode>(restored.submissionMode ?? "comment");
 const resolvedByThread = new Map<string, boolean>();
 let dragStart = -1;
 let dragEnd = -1;
 let dragging = false;
 let readyRetry: number | undefined;
 let draftPersistTimer: number | undefined;
+let pendingLocalEditSaveRequestId: string | undefined;
 const maxPersistedEditDraftCharacters = 512_000;
 
 const model = computed(() => state.value?.viewModel);
@@ -215,7 +225,8 @@ function persist(): void {
       ? localEditText.value
       : undefined,
     collapsedThreads: collapsedThreads.value,
-    diffScope: diffScope.value
+    diffScope: diffScope.value,
+    submissionMode: submissionMode.value
   };
   vscode.setState(persisted as Record<string, unknown>);
 }
@@ -244,6 +255,7 @@ function applyState(next: ReviewFileViewState): void {
   const previousMode = state.value?.mode;
   const previousSource = state.value?.source ?? "review";
   state.value = next;
+  if (next.submissionMode) submissionMode.value = next.submissionMode;
   if ((next.source === "commit" || next.source === "new-changes") && previousSource !== next.source) {
     diffScope.value = "changes";
     persist();
@@ -352,22 +364,32 @@ function flashAndScroll(element: HTMLElement): void {
 }
 
 function enterEdit(): void {
-  localEditText.value = model.value?.editableText ?? "";
+  localEditText.value ??= model.value?.editableText ?? "";
+  localEditSaveError.value = undefined;
   persist();
   post({ type: "enterEdit" });
 }
 
 function cancelEdit(): void {
+  if (localEditSaving.value) return;
+  const current = localEditText.value ?? "";
+  const original = model.value?.editableText ?? "";
+  if (current !== original && !window.confirm("Discard unsaved local edits?")) return;
   localEditText.value = undefined;
+  localEditSaveError.value = undefined;
   persist();
   post({ type: "cancelEdit" });
 }
 
 function saveEdit(): void {
+  if (localEditSaving.value) return;
   const text = localEditText.value ?? model.value?.editableText ?? "";
-  localEditText.value = undefined;
+  const requestId = crypto.randomUUID();
+  pendingLocalEditSaveRequestId = requestId;
+  localEditSaving.value = true;
+  localEditSaveError.value = undefined;
   persist();
-  post({ type: "saveLocalEdit", text });
+  post({ type: "saveLocalEdit", requestId, text });
 }
 
 function onEditorKeydown(event: KeyboardEvent): void {
@@ -384,6 +406,12 @@ function clearSelection(): void {
   selectedRange.value = undefined;
   rangeComposer.value = undefined;
   persist();
+}
+
+function setSubmissionMode(mode: ReviewSubmissionMode): void {
+  submissionMode.value = mode;
+  persist();
+  post({ type: "setSubmissionMode", mode });
 }
 
 function startDrag(event: PointerEvent, index: number): void {
@@ -410,12 +438,8 @@ function updateSelection(): void {
   persist();
 }
 
-function finishDrag(): void {
-  if (!dragging || dragStart < 0 || dragEnd < 0) return;
-  dragging = false;
-  const first = Math.min(dragStart, dragEnd);
-  const last = Math.max(dragStart, dragEnd);
-  const selectedRows = reviewSideBySideRows.value.slice(first, last + 1);
+function openRangeComposer(first: number, last: number): void {
+  const selectedRows = reviewSideBySideRows.value.slice(Math.min(first, last), Math.max(first, last) + 1);
   const selected = selectedRows.flatMap(reviewLinesInRow);
   const target = [...selected].reverse().find((line) => line.mrLine !== undefined && line.mrLine > 0);
   const anchor = primaryLineInRow(selectedRows.at(-1) as ReviewSideBySideRow | undefined);
@@ -432,8 +456,32 @@ function finishDrag(): void {
   };
   persist();
   void nextTick(() => {
-    document.querySelector<HTMLTextAreaElement>(".new-comment-form textarea")?.focus();
+    document.querySelector<HTMLElement>(".new-comment-form [contenteditable='true']")?.focus();
   });
+}
+
+function finishDrag(): void {
+  if (!dragging || dragStart < 0 || dragEnd < 0) return;
+  dragging = false;
+  openRangeComposer(dragStart, dragEnd);
+}
+
+function onRowKeydown(event: KeyboardEvent, index: number): void {
+  const rows = reviewSideBySideRows.value;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const next = Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+    document.querySelector<HTMLElement>(`[data-review-row-index="${next}"]`)?.focus();
+    return;
+  }
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  const anchor = event.shiftKey && dragStart >= 0 ? dragStart : index;
+  dragStart = anchor;
+  dragEnd = index;
+  selectedRange.value = undefined;
+  updateSelection();
+  openRangeComposer(anchor, index);
 }
 
 function isSelected(index: number): boolean {
@@ -477,17 +525,31 @@ function startCommentEdit(threadId: string, comment: ReviewComment): void {
   void nextTick(() => {
     const form = Array.from(document.querySelectorAll<HTMLElement>("[data-edit-key]"))
       .find((element) => element.dataset.editKey === key);
-    const textarea = form?.querySelector<HTMLTextAreaElement>("textarea");
-    textarea?.focus();
-    textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+    const editable = form?.querySelector<HTMLElement>("[contenteditable='true']");
+    if (!editable) return;
+    editable.focus();
+    const selection = document.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    range.collapse(false);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
   });
 }
 
 function cancelCommentEdit(threadId: string, comment: ReviewComment): void {
   const key = commentKey(threadId, comment.id);
+  if ((editDrafts.value[key] ?? comment.body).trim() !== comment.body.trim()
+      && !window.confirm("Discard unsaved comment edits?")) return;
   editingComments.value = editingComments.value.filter((candidate) => candidate !== key);
   delete editDrafts.value[key];
   persist();
+}
+
+function clearLocalEdit(): void {
+  if (!model.value?.hasLocalEdit) return;
+  if (!window.confirm("Discard local changes for this file?")) return;
+  post({ type: "clearLocalEdit" });
 }
 
 function submitCommentEdit(threadId: string, comment: ReviewComment): void {
@@ -537,8 +599,22 @@ function lineStateLabel(line: ReviewLine): string {
   return "Unchanged line";
 }
 
-function onMessage(event: MessageEvent<HostMessage<ReviewFileViewState>>): void {
+function onMessage(event: MessageEvent<HostMessage<ReviewFileViewState, ReviewFileHostMessage>>): void {
   const message = event.data;
+  if (message.type === "localEditSaveResult") {
+    if (message.requestId !== pendingLocalEditSaveRequestId) return;
+    pendingLocalEditSaveRequestId = undefined;
+    localEditSaving.value = false;
+    if (message.ok) {
+      localEditText.value = undefined;
+      localEditSaveError.value = undefined;
+    } else {
+      localEditSaveError.value = message.errorMessage;
+      void nextTick(() => editor.value?.focus());
+    }
+    persist();
+    return;
+  }
   if (handleCommentImageMessage(message)) return;
   if (message.type !== "state") return;
   stopReadyRetry();
@@ -601,23 +677,36 @@ onBeforeUnmount(() => {
         </span>
       </template>
       <template #actions>
-        <GlButton variant="confirm" size="small" icon="check" aria-label="Save local changes" title="Save local changes (Ctrl+S)" @click="saveEdit">
-          Save changes
+        <GlButton
+          variant="confirm"
+          size="small"
+          icon="check"
+          aria-label="Save local changes"
+          title="Save local changes (Ctrl+S)"
+          :disabled="!state.canEditLocally"
+          :loading="localEditSaving"
+          @click="saveEdit"
+        >
+          {{ localEditSaving ? "Saving…" : "Save changes" }}
         </GlButton>
-        <GlIconButton icon="close" label="Cancel editing" @click="cancelEdit" />
+        <GlIconButton icon="close" label="Cancel editing" :disabled="localEditSaving" @click="cancelEdit" />
       </template>
     </GlDiffHeader>
     <section class="edit-layout" aria-label="Edit local file">
       <div class="editor-pane">
         <div class="pane-heading">
           <span>Working copy</span>
-          <span>Ctrl+S to save</span>
+          <span v-if="localEditSaveError" class="local-save-state is-danger" role="alert">{{ localEditSaveError }}</span>
+          <span v-else-if="localEditSaving" class="local-save-state" role="status">Saving local draft…</span>
+          <span v-else>Ctrl+S to save</span>
         </div>
         <textarea
           ref="editor"
           v-model="localEditText"
           class="edit-area"
           aria-label="File contents"
+          :aria-busy="localEditSaving"
+          :readonly="localEditSaving"
           spellcheck="false"
           @input="persistEditDraft"
           @keydown="onEditorKeydown"
@@ -687,12 +776,12 @@ onBeforeUnmount(() => {
             :title="state.canEditLocally ? 'Edit a local working copy' : 'Open the MR source branch in this workspace to edit locally'"
             @click="enterEdit"
           >Edit locally</GlButton>
-          <GlIconButton
-            icon="remove"
-            label="Discard local changes"
-            variant="danger"
-            :disabled="!model.hasLocalEdit"
-            @click="post({ type: 'clearLocalEdit' })"
+            <GlIconButton
+              icon="remove"
+              label="Discard local changes"
+              variant="danger"
+              :disabled="!model.hasLocalEdit"
+              @click="clearLocalEdit"
           />
         </template>
       </template>
@@ -751,7 +840,7 @@ onBeforeUnmount(() => {
       v-if="!newChangesUnavailable"
       class="code-table"
       :rows="reviewSideBySideRows"
-      :left-label="'変更前'"
+       :left-label="'Before'"
       :right-label="model.hasLocalEdit ? 'Working copy' : state.source === 'new-changes' ? 'Latest push' : 'Merge request'"
       aria-label="File changes"
     >
@@ -759,24 +848,26 @@ onBeforeUnmount(() => {
         <div
           v-if="row.fullWidth"
           class="split-code-full"
-          role="row"
         >
-          <code role="cell">{{ row.left?.text ?? row.right?.text ?? ' ' }}</code>
+          <code>{{ row.left?.text ?? row.right?.text ?? ' ' }}</code>
         </div>
 
         <div
           v-else
           :class="['split-code-row', { 'range-selected': isSelected(index) }]"
-          role="row"
+           role="button"
           data-review-line
-          :data-mr-line="primaryLineInRow(row)?.mrLine"
-          :data-old-line="reviewLineFromSide(row.left)?.oldLine"
-          :aria-selected="isSelected(index)"
-          :aria-label="`${rowStateLabel(row)}, ${primaryLineInRow(row)?.mrLine ? `line ${primaryLineInRow(row)?.mrLine}` : 'deleted line'}`"
-          @pointerdown="startDrag($event, index)"
-          @pointerenter="extendDrag(index)"
+           :data-mr-line="primaryLineInRow(row)?.mrLine"
+           :data-old-line="reviewLineFromSide(row.left)?.oldLine"
+           :data-review-row-index="index"
+           :aria-pressed="isSelected(index)"
+           :tabindex="0"
+           :aria-label="`${rowStateLabel(row)}, ${primaryLineInRow(row)?.mrLine ? `line ${primaryLineInRow(row)?.mrLine}` : 'deleted line'}`"
+           @pointerdown="startDrag($event, index)"
+           @pointerenter="extendDrag(index)"
+           @keydown="onRowKeydown($event, index)"
         >
-          <div class="split-code-side" :class="sideClasses(row.left)" role="cell">
+           <div class="split-code-side" :class="sideClasses(row.left)">
             <span class="split-line-no">{{ row.left?.line ?? '' }}</span>
             <span class="split-change-marker" :title="row.left ? rowStateLabel({ key: row.key, left: row.left }) : ''">{{ sideMarker(row.left) }}</span>
             <pre class="split-code"><code>{{ row.left?.text || ' ' }}</code></pre>
@@ -785,7 +876,7 @@ onBeforeUnmount(() => {
             </span>
           </div>
 
-          <div class="split-code-side" :class="sideClasses(row.right)" role="cell">
+           <div class="split-code-side" :class="sideClasses(row.right)">
             <span class="split-line-no">{{ row.right?.line ?? '' }}</span>
             <span class="split-change-marker" :title="row.right ? rowStateLabel({ key: row.key, right: row.right }) : ''">{{ sideMarker(row.right) }}</span>
             <pre class="split-code"><code>{{ row.right?.text || ' ' }}</code></pre>
@@ -804,6 +895,12 @@ onBeforeUnmount(() => {
             <GlIcon name="comments" :size="14" />
             <strong>Start a discussion</strong>
             <span>on selected lines</span>
+          </div>
+          <div class="inline-submission-mode" role="group" aria-label="Choose comment or review">
+            <span>Post as</span>
+            <button type="button" :aria-pressed="submissionMode === 'comment'" @click="setSubmissionMode('comment')">Comment</button>
+            <button type="button" :aria-pressed="submissionMode === 'review'" @click="setSubmissionMode('review')">Review</button>
+            <small>{{ submissionMode === 'review' ? 'Stays pending until review submission' : 'Posts immediately' }}</small>
           </div>
           <GlCommentForm
             v-model="rangeComposer.body"
@@ -908,13 +1005,13 @@ onBeforeUnmount(() => {
 
             <GlCommentForm
               v-if="!thread.pending"
-              v-model="replyDrafts[thread.id]"
+              :model-value="replyDrafts[thread.id] ?? ''"
               class="reply-composer"
               ariaLabel="Reply to discussion"
               placeholder="Reply to this discussion…"
               compact
               :project-id="state?.projectId"
-              @update:modelValue="persist"
+              @update:modelValue="value => { replyDrafts[thread.id] = value; persist(); }"
               @submit="reply(thread)"
             />
           </div>
@@ -1025,6 +1122,7 @@ onBeforeUnmount(() => {
   cursor: crosshair;
   user-select: none;
 }
+.split-code-row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 
 .split-code-side {
   position: relative;
@@ -1066,7 +1164,7 @@ onBeforeUnmount(() => {
 .split-code-side.mr-added .split-change-marker { color: var(--vscode-gitDecoration-addedResourceForeground, var(--gl-feedback-success)); }
 .split-code-side.mr-removed .split-change-marker { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--gl-feedback-danger)); }
 .split-code-side.local-added .split-change-marker,
-.split-code-side.local-removed .split-change-marker { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--gl-feedback-info)); font-size: 9px; }
+.split-code-side.local-removed .split-change-marker { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--gl-feedback-info)); font-size: 10px; }
 .split-code {
   min-width: 0;
   min-height: 22px;
@@ -1173,14 +1271,19 @@ onBeforeUnmount(() => {
 .discussion-last-reply { min-width: 0; color: var(--gl-text-subtle); font-size: 10px; }
 .discussion-last-reply b, .discussion-expanded-title { color: var(--gl-text-strong); font-size: 11px; }
 .discussion-expanded-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.discussion-location { color: var(--gl-text-subtle); font: 9px var(--vscode-editor-font-family); }
+.discussion-location { color: var(--gl-text-subtle); font: 10px var(--vscode-editor-font-family); }
 .discussion-content { min-width: 0; }
 .note-body { line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
 .pending-note { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); font-size: 10px; }
-:deep(.comment-edit-form textarea) { min-height: 72px; }
+:deep(.comment-edit-form [contenteditable='true']) { min-height: 72px; }
 :deep(.comment-edit-action) { color: var(--gl-text-subtle); }
 :deep(.comment-edit-action:hover) { color: var(--gl-thread-accent); background: color-mix(in srgb, var(--gl-thread-accent) 12%, transparent); }
 .reply-composer { width: auto; margin: 0; border: 0; border-radius: 0; }
+.inline-submission-mode { display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-4) var(--gl-spacing-12) 0; color: var(--gl-text-subtle); font-size: 10px; }
+.inline-submission-mode button { min-height: 24px; padding: var(--gl-spacing-2) var(--gl-spacing-8); border: 1px solid var(--gl-border-default); color: var(--gl-text-subtle); background: var(--gl-surface-subtle); cursor: pointer; }
+.inline-submission-mode button + button { margin-left: -1px; }
+.inline-submission-mode button[aria-pressed="true"] { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, var(--gl-feedback-brand)); }
+.inline-submission-mode small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .edit-layout { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 30vw); }
 .editor-pane { min-width: 0; display: grid; grid-template-rows: auto 1fr; }
@@ -1191,9 +1294,11 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--gl-border-default);
   color: var(--gl-text-subtle);
   background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
 }
+.local-save-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+.local-save-state.is-danger { color: var(--gl-feedback-danger); }
 
 .edit-area {
   width: 100%;

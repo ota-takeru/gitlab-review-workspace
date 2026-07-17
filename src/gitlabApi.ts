@@ -452,6 +452,53 @@ export class GitLabReviewClient {
     return toReviewThread(discussion, true);
   }
 
+  async createDraftThread(
+    review: ReviewState,
+    file: ReviewFile,
+    mrLine: number,
+    oldLine: number | undefined,
+    body: string
+  ): Promise<ReviewDraftNote> {
+    const diffRefs = review.diffRefs;
+    if (!diffRefs) {
+      throw new Error("The merge request diff references are unavailable.");
+    }
+    const fields = [
+      "--raw-field",
+      `note=${body}`,
+      "--raw-field",
+      `position[base_sha]=${diffRefs.baseSha}`,
+      "--raw-field",
+      `position[start_sha]=${diffRefs.startSha}`,
+      "--raw-field",
+      `position[head_sha]=${diffRefs.headSha}`,
+      "--raw-field",
+      "position[position_type]=text",
+      "--raw-field",
+      `position[old_path]=${file.oldPath ?? file.path}`,
+      "--raw-field",
+      `position[new_path]=${file.newPath ?? file.path}`,
+      "--raw-field",
+      `position[new_line]=${mrLine}`
+    ];
+    if (typeof oldLine === "number") {
+      fields.push("--raw-field", `position[old_line]=${oldLine}`);
+    }
+    const draft = await this.requestJson<GitLabDraftNote>(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "POST",
+        `projects/${projectSegment(review.projectId)}/merge_requests/${review.mergeRequestIid}/draft_notes`,
+        ...fields
+      ],
+      "Could not add the comment to the GitLab review."
+    );
+    return toReviewDraftNote(draft);
+  }
+
   async createOverviewThread(review: ReviewState, body: string): Promise<ReviewThread> {
     const discussion = await this.requestJson<GitLabDiscussion>(
       [

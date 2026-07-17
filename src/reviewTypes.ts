@@ -134,6 +134,8 @@ export interface FileSummary extends DiffCount {
   resolvedThreadCount: number;
   hasLocalEdit: boolean;
   localEditUpdatedAt?: string;
+  viewed?: boolean;
+  newSinceLastReview?: boolean;
 }
 
 export interface ReviewOverview {
@@ -157,6 +159,38 @@ export interface ReviewOverview {
   additions: number;
   deletions: number;
   newChanges?: ReviewUpdateRange;
+  progress?: ReviewProgress;
+}
+
+export type ReviewCompletionState = "not-started" | "in-progress" | "ready-to-submit" | "complete";
+
+export interface ReviewProgressRecord {
+  viewedFiles: string[];
+  viewedFileHeads?: Record<string, string>;
+  lastReviewedSha?: string;
+  lastReviewedAt?: string;
+}
+
+export type ReviewProgressByMergeRequest = Record<string, ReviewProgressRecord>;
+
+export interface ReviewProgress {
+  totalFiles: number;
+  viewedFiles: number;
+  unviewedFiles: number;
+  totalDiscussions: number;
+  resolvedDiscussions: number;
+  unresolvedDiscussions: number;
+  completionPercent: number;
+  completionState: ReviewCompletionState;
+  nextUnresolvedThread?: {
+    id: string;
+    filePath?: string;
+    line?: number;
+  };
+  lastReviewedSha?: string;
+  lastReviewedAt?: string;
+  newSinceLastReview: boolean;
+  newCommitCount: number;
 }
 
 export interface ReviewUpdateRange {
@@ -165,6 +199,7 @@ export interface ReviewUpdateRange {
   fromSha: string;
   toSha: string;
   commitCount: number;
+  changedPaths?: string[];
 }
 
 export interface ReviewCommit {

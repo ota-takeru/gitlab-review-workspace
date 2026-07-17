@@ -93,7 +93,7 @@ const threadState: SidebarViewState = {
       commentCount: 1,
       authors: [{ name: "reviewer" }],
       lastComment: { author: "reviewer", createdAt: "2026-07-13T10:00:00.000Z" },
-      searchText: "reviewer\nCould we simplify this branch?"
+      searchText: "src/review.ts\nreviewer\nCould we simplify this branch?"
     }],
     totalComments: 1,
     unresolvedThreads: 1,
@@ -159,6 +159,52 @@ const pendingReviewState: SidebarViewState = {
   }
 };
 
+const progressState: SidebarViewState = {
+  ...threadState,
+  overview: {
+    ...threadState.overview,
+    files: [
+      ...(threadState.overview.files ?? []).map((file) => ({
+        ...file,
+        viewed: true,
+        newSinceLastReview: true
+      })),
+      {
+        path: "src/untouched.ts",
+        language: "typescript",
+        additions: 0,
+        deletions: 0,
+        threadCount: 0,
+        unresolvedThreadCount: 0,
+        resolvedThreadCount: 0,
+        hasLocalEdit: false,
+        viewed: false
+      }
+    ],
+    progress: {
+      totalFiles: 2,
+      viewedFiles: 1,
+      unviewedFiles: 1,
+      totalDiscussions: 1,
+      resolvedDiscussions: 0,
+      unresolvedDiscussions: 1,
+      completionPercent: 25,
+      completionState: "in-progress",
+      nextUnresolvedThread: { id: "discussion-1", filePath: "src/review.ts", line: 42 },
+      newSinceLastReview: true,
+      newCommitCount: 2
+    },
+    newChanges: {
+      projectId: "101",
+      mergeRequestIid: 42,
+      fromSha: "head-1",
+      toSha: "head-2",
+      commitCount: 2,
+      changedPaths: ["src/review.ts"]
+    }
+  }
+};
+
 function renderState(nextState: SidebarViewState) {
   return {
     components: { SidebarApp: App },
@@ -220,9 +266,30 @@ export const PendingReview: Story = {
     const pendingReview = canvas.getByRole("region", { name: "Pending review" });
     const pending = within(pendingReview);
     await expect(pendingReview).toBeVisible();
-    await expect(pending.getByRole("button", { name: "Submit review" })).toBeEnabled();
+    const tray = canvas.getByRole("region", { name: "Review submission" });
+    const submission = within(tray);
+    await expect(submission.getByRole("button", { name: "Submit review" })).toBeEnabled();
     await expect(pending.getAllByRole("button", { name: "Post as comment" })).toHaveLength(2);
     await expect(pending.getByText("src/review.ts:42")).toBeVisible();
+  }
+};
+
+export const ReviewProgress: Story = {
+  render: () => renderState(progressState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const progress = canvas.getByRole("region", { name: "Review progress" });
+    const progressRegion = within(progress);
+    await expect(progress).toBeVisible();
+    await expect(progressRegion.getByText("New since last review")).toBeVisible();
+    await expect(progressRegion.getByText("1/2")).toBeVisible();
+    await expect(progressRegion.getByRole("button", { name: "Next unresolved" })).toBeEnabled();
+    await expect(progressRegion.getByRole("progressbar", { name: "Review completion" })).toHaveAttribute("aria-valuenow", "25");
+    await userEvent.click(canvas.getByRole("button", { name: /Changed files/ }));
+    await userEvent.selectOptions(canvas.getByRole("combobox", { name: "Filter changed files by status" }), "new");
+    await expect(canvas.getByText("1 file")).toBeVisible();
+    await expect(canvas.getByText("NEW")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: /Changed files/ }));
   }
 };
 
@@ -258,9 +325,9 @@ export const SearchReviewComments: Story = {
   render: () => renderState({ ...threadState, threadDetails: [] }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.queryByRole("searchbox", { name: "Search review comment text and authors" })).toBeNull();
-    await userEvent.click(canvas.getByRole("button", { name: "Search review comments" }));
-    const search = canvas.getByRole("searchbox", { name: "Search review comment text and authors" });
+    await expect(canvas.queryByRole("searchbox", { name: "Search review comments, authors, and files" })).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Search review comments and files" }));
+    const search = canvas.getByRole("searchbox", { name: "Search review comments, authors, and files" });
     await expect(canvasElement.ownerDocument.activeElement).toBe(search);
     await userEvent.type(search, "simplify");
     await expect(canvas.getByText("1 of 1 threads")).toBeVisible();
@@ -271,13 +338,13 @@ export const SearchReviewComments: Story = {
     await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
     await userEvent.clear(search);
     await userEvent.type(search, "src/review.ts");
-    await expect(canvas.getByText("No review comments found")).toBeVisible();
-    await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(0);
+    await expect(canvas.getByText("1 of 1 threads")).toBeVisible();
+    await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
     await userEvent.click(canvas.getByRole("button", { name: "Clear review search" }));
     await expect(search).toHaveValue("");
     await expect(canvasElement.querySelectorAll(".thread")).toHaveLength(1);
     await userEvent.click(canvas.getByRole("button", { name: "Close review search" }));
-    await expect(canvas.queryByRole("searchbox", { name: "Search review comment text and authors" })).toBeNull();
+    await expect(canvas.queryByRole("searchbox", { name: "Search review comments, authors, and files" })).toBeNull();
   }
 };
 
@@ -285,7 +352,8 @@ export const ManyChangedFiles: Story = {
   render: () => renderState(manyFilesState),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: /Changed files/ }));
+    const changedFilesToggle = canvas.getByRole("button", { name: /Changed files/ });
+    if (changedFilesToggle.getAttribute("aria-expanded") !== "true") await userEvent.click(changedFilesToggle);
     await expect(canvas.getByRole("button", { name: "Show 200 more" })).toBeVisible();
     await expect(canvas.queryByText("src/generated/module-201.ts")).toBeNull();
   }

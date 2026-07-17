@@ -22,7 +22,7 @@ const scroller = ref<HTMLElement>();
 const hasItems = computed(() => Object.values(props.state.buckets).some((items) => items.length > 0));
 
 function formatUpdatedAt(value?: string): string {
-  if (!value) return "未取得";
+  if (!value) return "unavailable";
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
@@ -47,23 +47,23 @@ onMounted(() => {
         <h1>My work</h1>
         <span>Last successful update: {{ formatUpdatedAt(state.lastSuccessfulAt) }}</span>
       </div>
-      <GlIconButton icon="retry" label="My workを更新" :loading="state.phase === 'loading'" @click="$emit('refresh')" />
+    <GlIconButton icon="retry" label="Refresh My work" :loading="state.phase === 'loading'" @click="$emit('refresh')" />
     </header>
 
     <div v-if="state.phase === 'partial'" class="my-work-banner is-warning">
       <GlIcon name="warning" :size="14" />
-      <span>一部を更新できませんでした。キャッシュを表示しています。</span>
+      <span>Some sources failed to refresh. Showing cached results.</span>
     </div>
     <div v-else-if="state.phase === 'error'" class="my-work-banner is-danger">
       <GlIcon name="warning" :size="14" />
-      <span>My workを更新できませんでした。</span>
+      <span>Could not refresh My work.</span>
     </div>
     <div v-else-if="state.phase === 'loading' && hasItems" class="my-work-banner">
       <GlIcon name="spinner" class="spin" :size="14" />
-      <span>更新中。キャッシュを表示しています。</span>
+      <span>Refreshing. Showing cached results.</span>
     </div>
 
-    <GlEmptyState v-if="state.phase === 'loading' && !hasItems" title="My workを読み込んでいます" icon="spinner" />
+    <GlEmptyState v-if="state.phase === 'loading' && !hasItems" title="Loading My work" icon="spinner" />
 
     <template v-else>
       <GlSection class="work-section attention" title="Action required" :count="state.buckets.attention.length" flush>
@@ -76,7 +76,7 @@ onMounted(() => {
             @open-mr="(mr) => $emit('openMr', mr)"
           />
         </div>
-        <GlEmptyState v-else title="対応が必要なMRはありません" icon="check-circle" compact />
+    <GlEmptyState v-else title="No MRs need attention" icon="check-circle" compact />
       </GlSection>
 
       <GlSection class="work-section active" title="In progress" :count="state.buckets.active.length" flush>
@@ -89,7 +89,7 @@ onMounted(() => {
             @open-mr="(mr) => $emit('openMr', mr)"
           />
         </div>
-        <GlEmptyState v-else title="進行中のMRはありません" icon="commit" compact />
+    <GlEmptyState v-else title="No MRs in progress" icon="commit" compact />
       </GlSection>
 
       <GlSection class="work-section waiting" title="Waiting" :count="state.buckets.waiting.length" flush>
@@ -102,7 +102,7 @@ onMounted(() => {
             @open-mr="(mr) => $emit('openMr', mr)"
           />
         </div>
-        <GlEmptyState v-else title="待機中のMRはありません" icon="information" compact />
+    <GlEmptyState v-else title="No MRs waiting" icon="information" compact />
       </GlSection>
     </template>
   </section>
@@ -121,7 +121,7 @@ onMounted(() => {
 .my-work-header { display: flex; align-items: center; justify-content: space-between; gap: var(--gl-spacing-8); }
 .my-work-header > div { min-width: 0; display: grid; gap: var(--gl-spacing-2); }
 .my-work-header h1 { margin: 0; color: var(--gl-text-strong); font-size: 14px; }
-.my-work-header span { color: var(--gl-text-subtle); font-size: 9px; }
+.my-work-header span { color: var(--gl-text-subtle); font-size: 10px; }
 .my-work-banner { display: flex; align-items: center; gap: var(--gl-spacing-8); padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); color: var(--gl-text-subtle); background: var(--gl-surface-raised); font-size: 10px; }
 .my-work-banner.is-warning { color: var(--gl-feedback-warning); background: var(--gl-feedback-warning-subtle); }
 .my-work-banner.is-danger { color: var(--gl-feedback-danger); background: var(--gl-feedback-danger-subtle); }

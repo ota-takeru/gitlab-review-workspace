@@ -6,28 +6,42 @@ defineProps<{
   attentionCount: number;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   select: [tab: "review" | "my-work"];
 }>();
+
+function onKeydown(event: KeyboardEvent): void {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const next = event.key === "Home" || event.key === "ArrowLeft" ? "review" : "my-work";
+  emit("select", next);
+  void (event.currentTarget as HTMLElement).parentElement?.querySelector<HTMLElement>(`[data-tab="${next}"]`)?.focus();
+}
 </script>
 
 <template>
-  <nav class="sidebar-tabs" aria-label="GitLab workspace views">
+  <nav class="sidebar-tabs" role="tablist" aria-label="GitLab workspace views" @keydown="onKeydown">
     <button
       type="button"
       role="tab"
+      data-tab="review"
+      id="review-tab"
       :aria-selected="activeTab === 'review'"
+      :tabindex="activeTab === 'review' ? 0 : -1"
       :class="{ active: activeTab === 'review' }"
-      @click="$emit('select', 'review')"
+      @click="emit('select', 'review')"
     >
       Review
     </button>
     <button
       type="button"
       role="tab"
+      data-tab="my-work"
+      id="my-work-tab"
       :aria-selected="activeTab === 'my-work'"
       :class="{ active: activeTab === 'my-work' }"
-      @click="$emit('select', 'my-work')"
+      :tabindex="activeTab === 'my-work' ? 0 : -1"
+      @click="emit('select', 'my-work')"
     >
       My work
       <GlBadge v-if="attentionCount > 0" tone="warning" pill>{{ attentionCount }}</GlBadge>

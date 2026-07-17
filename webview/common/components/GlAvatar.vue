@@ -48,7 +48,7 @@ watch(() => props.avatarUrl, () => { failed.value = false; });
   font-size: 10px;
   font-weight: 600;
 }
-.is-small { width: 24px; height: 24px; font-size: 9px; }
+.is-small { width: 24px; height: 24px; font-size: 10px; }
 .avatar-color-orange { color: #6b341d; background: color-mix(in srgb, var(--gl-accent-orange) 24%, var(--gl-surface-raised)); }
 .avatar-color-purple { color: #453a7d; background: color-mix(in srgb, var(--gl-accent-purple) 24%, var(--gl-surface-raised)); }
 .avatar-color-blue { color: #1f4e85; background: color-mix(in srgb, var(--gl-accent-blue) 24%, var(--gl-surface-raised)); }

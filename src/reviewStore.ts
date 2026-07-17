@@ -6,7 +6,13 @@ import { buildReviewLines, buildReviewLinesFromPatch, countLineDiff, countPatchD
 import { editedTimestamp } from "./commentUtils";
 import { buildReviewLinesAsync, shouldBuildReviewLinesInWorker } from "./reviewDiffWorkerClient";
 import { ReviewThreadSortOrder, sortReviewThreads } from "./reviewTreeUtils";
-import { detectReviewUpdateRange } from "./reviewUpdateUtils";
+import { detectReviewUpdateRange, mergeReviewUpdateRanges } from "./reviewUpdateUtils";
+import {
+  calculateReviewProgress,
+  isReviewFileNewSinceLastReview,
+  isReviewFileViewed,
+  normalizeReviewProgressRecords
+} from "./reviewProgressUtils";
 import {
   BranchFileContent,
   CommitDiffFile,
@@ -24,6 +30,8 @@ import {
   ReviewLine,
   ReviewLoadState,
   ReviewOverview,
+  ReviewProgressByMergeRequest,
+  ReviewProgressRecord,
   ReviewState,
   ReviewSubmissionMode,
   ReviewThread,
@@ -43,7 +51,9 @@ export const REVIEW_CACHE_KEYS = {
   commitDiffs: "gitlabReview.cache.commitDiffs.v1",
   threadSortOrder: "gitlabReview.threadSortOrder.v1",
   workspaceAssociations: "gitlabReview.workspaceAssociations.v1",
-  newChanges: "gitlabReview.newChanges.v1"
+  newChanges: "gitlabReview.newChanges.v1",
+  submissionMode: "gitlabReview.submissionMode.v1",
+  reviewProgress: "gitlabReview.reviewProgress.v1"
 } as const;
 
 const cacheLimits = {
@@ -100,9 +110,11 @@ export class ReviewStore {
   private isRefreshing = false;
   private errorMessage?: string;
   private threadSortOrder: ReviewThreadSortOrder;
+  private submissionMode: ReviewSubmissionMode;
   private selectedReference?: MergeRequestReference;
   private lastLoadedReference?: MergeRequestReference;
   private readonly reviewStateCache = new Map<string, ReviewState>();
+  private readonly reviewProgress: ReviewProgressByMergeRequest;
   private refreshGeneration = 0;
   private localEdits: LocalEditsByMergeRequest;
   private workspaceAssociations: WorkspaceAssociations;
@@ -151,6 +163,12 @@ export class ReviewStore {
       : undefined;
     this.threadSortOrder = normalizeThreadSortOrder(
       this.context.workspaceState.get<string>(REVIEW_CACHE_KEYS.threadSortOrder)
+    );
+    this.submissionMode = normalizeSubmissionMode(
+      this.context.workspaceState.get<string>(REVIEW_CACHE_KEYS.submissionMode)
+    );
+    this.reviewProgress = normalizeReviewProgressRecords(
+      this.context.workspaceState.get<unknown>(REVIEW_CACHE_KEYS.reviewProgress)
     );
     this.selectedReference = this.context.workspaceState.get<MergeRequestReference>(
       REVIEW_CACHE_KEYS.selectedMergeRequest
@@ -207,6 +225,14 @@ export class ReviewStore {
     const resolvedThreads = resolvableThreads.filter((thread) => thread.resolved).length;
     const unresolvedThreads = resolvableThreads.length - resolvedThreads;
     const threads = sortedThreads.map(toReviewThreadSummary);
+    const progress = calculateReviewProgress(
+      files,
+      this.state?.threads ?? [],
+      this.getReviewProgressRecord(this.state),
+      this.state?.diffRefs?.headSha,
+      this.newChanges,
+      this.state?.draftNotes?.length ?? 0
+    );
 
     const value: ReviewOverview = {
       loadState: this.loadState,
@@ -228,7 +254,8 @@ export class ReviewStore {
       resolvedThreads,
       additions,
       deletions,
-      newChanges: this.newChanges
+      newChanges: this.newChanges,
+      progress
     };
     this.overviewCache = { revision: this.overviewRevision, value };
     return value;
@@ -242,6 +269,41 @@ export class ReviewStore {
 
   getNewChanges(): ReviewUpdateRange | undefined {
     return this.newChanges;
+  }
+
+  markFileViewed(filePath: string): void {
+    const review = this.state;
+    if (!review || !review.files.some((file) => file.path === filePath)) return;
+    const record = this.getReviewProgressRecord(review);
+    const headSha = review.diffRefs?.headSha;
+    if (record.viewedFiles.includes(filePath) && (!headSha || record.viewedFileHeads?.[filePath] === headSha)) {
+      return;
+    }
+    if (!record.viewedFiles.includes(filePath)) record.viewedFiles.push(filePath);
+    if (headSha) record.viewedFileHeads = { ...record.viewedFileHeads, [filePath]: headSha };
+    this.persistReviewProgress();
+    this.emitChange();
+  }
+
+  markReviewComplete(): void {
+    const review = this.state;
+    if (!review) return;
+    const overview = this.getOverview();
+    if (overview.unresolvedThreads > 0 || (review.draftNotes?.length ?? 0) > 0) {
+      void vscode.window.showInformationMessage("Resolve open discussions and submit pending review comments first.");
+      return;
+    }
+    const record = this.getReviewProgressRecord(review);
+    record.viewedFiles = review.files.map((file) => file.path);
+    const headSha = review.diffRefs?.headSha;
+    record.viewedFileHeads = headSha
+      ? Object.fromEntries(record.viewedFiles.map((filePath) => [filePath, headSha]))
+      : undefined;
+    record.lastReviewedSha = headSha;
+    record.lastReviewedAt = new Date().toISOString();
+    if (this.newChanges) this.setNewChanges(undefined);
+    this.persistReviewProgress();
+    this.emitChange();
   }
 
   getWorkspaceAssociation(projectId: string, mergeRequestIid: number): MergeRequestWorkspaceAssociation | undefined {
@@ -396,13 +458,14 @@ export class ReviewStore {
             : [];
           const loadedState = await client.loadMergeRequest(reference, fallbackCommits, previousState?.draftNotes ?? []);
           if (generation !== this.refreshGeneration) return;
-          this.updateNewChanges(previousState, loadedState);
+          const newChangesToHydrate = this.updateNewChanges(previousState, loadedState);
           this.state = loadedState;
           this.lastLoadedReference = reference;
           this.cacheReviewState(this.state);
           this.loadState = "ready";
           this.errorMessage = undefined;
           this.persistReviewState();
+          if (newChangesToHydrate) void this.hydrateNewChangesPaths(newChangesToHydrate);
         } catch {
           if (generation !== this.refreshGeneration) return;
           this.state = previousState;
@@ -467,6 +530,16 @@ export class ReviewStore {
   async setThreadSortOrder(order: ReviewThreadSortOrder): Promise<void> {
     this.threadSortOrder = normalizeThreadSortOrder(order);
     await this.context.workspaceState.update(REVIEW_CACHE_KEYS.threadSortOrder, this.threadSortOrder);
+    this.emitChange();
+  }
+
+  getSubmissionMode(): ReviewSubmissionMode {
+    return this.submissionMode;
+  }
+
+  setSubmissionMode(mode: ReviewSubmissionMode): void {
+    this.submissionMode = normalizeSubmissionMode(mode);
+    this.persistBestEffort(REVIEW_CACHE_KEYS.submissionMode, this.submissionMode);
     this.emitChange();
   }
 
@@ -553,20 +626,8 @@ export class ReviewStore {
     if (!review || !range || review.projectId !== range.projectId || review.diffRefs?.headSha !== range.toSha) {
       return undefined;
     }
-    const cacheKey = `compare:${review.projectId}:${range.fromSha}:${range.toSha}`;
-    let files = this.commitDiffCache.get(cacheKey);
-    if (!files) {
-      files = await this.getClient().compareCommits(review.projectId, range.fromSha, range.toSha);
-      this.setLimitedCache(
-        this.commitDiffCache,
-        this.commitDiffCacheTimes,
-        cacheKey,
-        files,
-        cacheLimits.commitDiffs
-      );
-      this.trimCommitDiffCharacters();
-      this.persistCommitDiffCache();
-    }
+    const files = await this.loadComparisonFiles(range);
+    this.applyChangedPaths(range, files);
     const file = files.find((candidate) => candidate.path === filePath || candidate.oldPath === filePath || candidate.newPath === filePath);
     return file ? { range, file } : undefined;
   }
@@ -830,12 +891,19 @@ export class ReviewStore {
     filePath: string,
     mrLine: number,
     oldLine: number | undefined,
-    body: string
+    body: string,
+    mode: ReviewSubmissionMode = this.submissionMode
   ): Promise<void> {
     const review = this.state;
     const file = this.findFile(filePath);
     const trimmed = body.trim();
     if (!review || !file || !trimmed || mrLine < 1) {
+      return;
+    }
+
+    this.submissionMode = normalizeSubmissionMode(mode);
+    if (this.submissionMode === "review") {
+      await this.addFileDraftNote(review, file, mrLine, oldLine, trimmed);
       return;
     }
 
@@ -881,6 +949,8 @@ export class ReviewStore {
     if (!review || !trimmed) {
       return;
     }
+
+    this.setSubmissionMode(mode);
 
     if (mode === "review") {
       await this.addOverviewDraftNote(review, trimmed);
@@ -983,16 +1053,48 @@ export class ReviewStore {
     }
   }
 
+  private async addFileDraftNote(
+    review: ReviewState,
+    file: ReviewFile,
+    mrLine: number,
+    oldLine: number | undefined,
+    body: string
+  ): Promise<void> {
+    const pendingDraft: ReviewDraftNote = {
+      id: pendingId("draft-note"),
+      body,
+      filePath: file.path,
+      line: mrLine,
+      pending: true
+    };
+    const drafts = review.draftNotes ?? (review.draftNotes = []);
+    drafts.push(pendingDraft);
+    this.emitChange();
+
+    try {
+      const confirmedDraft = await this.getClient().createDraftThread(review, file, mrLine, oldLine, body);
+      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
+      if (index >= 0) drafts[index] = confirmedDraft;
+      this.persistReviewState();
+      this.emitChange();
+    } catch {
+      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
+      if (index >= 0) drafts.splice(index, 1);
+      this.emitChange();
+      void vscode.window.showErrorMessage("コメントを GitLab のレビューに追加できませんでした。");
+    }
+  }
+
   async saveLocalEdit(filePath: string, editedText: string): Promise<void> {
     const file = this.findFile(filePath);
     const review = this.state;
     if (!file || !review) {
-      return;
+      throw new Error("The file is no longer available in the selected merge request.");
     }
 
     const contents = this.reviewFileContentCache.get(reviewFileContentKey(review, file))?.contents
       ?? await this.loadReviewFileContents(filePath);
-    const edits = this.localEdits[review.id] ?? {};
+    const edits = { ...(this.localEdits[review.id] ?? {}) };
     if (editedText === contents.mrText) {
       delete edits[filePath];
     } else {
@@ -1003,18 +1105,23 @@ export class ReviewStore {
       edits[filePath] = localEdit;
     }
 
-    this.localEdits[review.id] = edits;
-    await this.persistLocalEdits();
+    const nextLocalEdits = { ...this.localEdits, [review.id]: edits };
+    await this.persistLocalEdits(nextLocalEdits);
+    this.localEdits = nextLocalEdits;
     this.emitChange();
   }
 
   async clearLocalEdit(filePath: string): Promise<void> {
-    if (!this.state || !this.getLocalEdit(this.state.id, filePath)) {
+    const review = this.state;
+    if (!review || !this.getLocalEdit(review.id, filePath)) {
       return;
     }
 
-    delete this.localEdits[this.state.id][filePath];
-    await this.persistLocalEdits();
+    const edits = { ...this.localEdits[review.id] };
+    delete edits[filePath];
+    const nextLocalEdits = { ...this.localEdits, [review.id]: edits };
+    await this.persistLocalEdits(nextLocalEdits);
+    this.localEdits = nextLocalEdits;
     this.emitChange();
   }
 
@@ -1022,6 +1129,8 @@ export class ReviewStore {
     const threads = this.getThreadsForFile(file.path);
     const resolvedThreadCount = threads.filter((thread) => thread.resolvable !== false && thread.resolved).length;
     const localEdit = this.state ? this.getLocalEdit(this.state.id, file.path) : undefined;
+    const record = this.getReviewProgressRecord(this.state);
+    const headSha = this.state?.diffRefs?.headSha;
 
     return {
       path: file.path,
@@ -1032,8 +1141,21 @@ export class ReviewStore {
       resolvedThreadCount,
       unresolvedThreadCount: threads.filter((thread) => thread.resolvable !== false).length - resolvedThreadCount,
       hasLocalEdit: Boolean(localEdit),
-      localEditUpdatedAt: localEdit?.updatedAt
+      localEditUpdatedAt: localEdit?.updatedAt,
+      viewed: isReviewFileViewed(file.path, record, headSha, this.newChanges),
+      newSinceLastReview: isReviewFileNewSinceLastReview(file.path, record, headSha, this.newChanges)
     };
+  }
+
+  private getReviewProgressRecord(review: ReviewState | undefined): ReviewProgressRecord {
+    if (!review) return { viewedFiles: [] };
+    const key = workspaceAssociationKey(review.projectId, review.mergeRequestIid);
+    if (!this.reviewProgress[key]) this.reviewProgress[key] = { viewedFiles: [] };
+    return this.reviewProgress[key];
+  }
+
+  private persistReviewProgress(): void {
+    this.persistBestEffort(REVIEW_CACHE_KEYS.reviewProgress, this.reviewProgress);
   }
 
   private getThreadsForFile(filePath: string): ReviewThread[] {
@@ -1112,11 +1234,12 @@ export class ReviewStore {
     return `${reviewFileContentKey(review, file)}:${hasContents ? "full" : `patch:${file.patch?.length ?? 0}`}:${localEdit?.updatedAt ?? ""}:${threadLayout}`;
   }
 
-  private updateNewChanges(previous: ReviewState | undefined, current: ReviewState): void {
+  private updateNewChanges(previous: ReviewState | undefined, current: ReviewState): ReviewUpdateRange | undefined {
     const detected = detectReviewUpdateRange(previous, current);
     if (detected) {
-      this.setNewChanges(detected);
-      return;
+      const merged = mergeReviewUpdateRanges(this.newChanges, detected);
+      this.setNewChanges(merged);
+      return merged;
     }
     if (this.newChanges && (
       this.newChanges.projectId !== current.projectId
@@ -1124,7 +1247,58 @@ export class ReviewStore {
       || this.newChanges.toSha !== current.diffRefs?.headSha
     )) {
       this.setNewChanges(undefined);
+      return undefined;
     }
+    return this.newChanges?.changedPaths === undefined ? this.newChanges : undefined;
+  }
+
+  private async hydrateNewChangesPaths(range: ReviewUpdateRange): Promise<void> {
+    try {
+      const files = await this.loadComparisonFiles(range);
+      this.applyChangedPaths(range, files);
+    } catch {
+      // Without a comparison, progress remains conservative and treats every file as new.
+    }
+  }
+
+  private async loadComparisonFiles(range: ReviewUpdateRange): Promise<CommitDiffFile[]> {
+    const cacheKey = `compare:${range.projectId}:${range.fromSha}:${range.toSha}`;
+    const cached = this.commitDiffCache.get(cacheKey);
+    if (cached) {
+      this.commitDiffCacheTimes.set(cacheKey, Date.now());
+      return cached;
+    }
+    const files = await this.getClient().compareCommits(range.projectId, range.fromSha, range.toSha);
+    this.setLimitedCache(
+      this.commitDiffCache,
+      this.commitDiffCacheTimes,
+      cacheKey,
+      files,
+      cacheLimits.commitDiffs
+    );
+    this.trimCommitDiffCharacters();
+    this.persistCommitDiffCache();
+    return files;
+  }
+
+  private applyChangedPaths(range: ReviewUpdateRange, files: readonly CommitDiffFile[]): void {
+    const current = this.newChanges;
+    if (!current
+        || current.projectId !== range.projectId
+        || current.mergeRequestIid !== range.mergeRequestIid
+        || current.fromSha !== range.fromSha
+        || current.toSha !== range.toSha) {
+      return;
+    }
+    const changedPaths = [...new Set(files.flatMap((file) => [file.path, file.oldPath, file.newPath]))]
+      .filter((filePath): filePath is string => Boolean(filePath));
+    if (current.changedPaths
+        && current.changedPaths.length === changedPaths.length
+        && current.changedPaths.every((filePath, index) => filePath === changedPaths[index])) {
+      return;
+    }
+    this.setNewChanges({ ...current, changedPaths });
+    this.emitChange();
   }
 
   private setNewChanges(value: ReviewUpdateRange | undefined): void {
@@ -1209,8 +1383,8 @@ export class ReviewStore {
     this.reviewLineLoads.set(key, load);
   }
 
-  private persistLocalEdits(): Thenable<void> {
-    return this.context.workspaceState.update(REVIEW_CACHE_KEYS.localEdits, this.localEdits);
+  private persistLocalEdits(value: LocalEditsByMergeRequest = this.localEdits): Thenable<void> {
+    return this.context.workspaceState.update(REVIEW_CACHE_KEYS.localEdits, value);
   }
 
   private persistReviewState(): void {
@@ -1385,6 +1559,10 @@ function normalizeThreadSortOrder(order: string | undefined): ReviewThreadSortOr
   return order === "oldest" || order === "newest" || order === "open-first" ? order : "open-first";
 }
 
+function normalizeSubmissionMode(mode: string | undefined): ReviewSubmissionMode {
+  return mode === "review" ? "review" : "comment";
+}
+
 function commitDiffSize(files: readonly CommitDiffFile[]): number {
   return files.reduce(
     (total, file) => total + file.diff.length + file.oldPath.length + file.newPath.length,
@@ -1435,7 +1613,10 @@ function toReviewThreadSummary(thread: ReviewThread): ReviewThreadSummary {
     commentCount: thread.comments.length,
     authors: [...authors.values()],
     lastComment: last ? { author: last.author, createdAt: last.createdAt } : undefined,
-    searchText: thread.comments.map((comment) => `${comment.author}\n${comment.body}`).join("\n")
+    searchText: [
+      thread.filePath,
+      ...thread.comments.map((comment) => `${comment.author}\n${comment.body}`)
+    ].filter(Boolean).join("\n")
   };
 }
 

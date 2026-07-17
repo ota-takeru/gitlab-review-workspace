@@ -1,4 +1,5 @@
 import type { Preview } from "@storybook/vue3-vite";
+import { computed, watchEffect } from "vue";
 import "../webview/common/theme.css";
 import "./storybook.css";
 
@@ -21,7 +22,9 @@ const lightTheme = {
   "--vscode-list-hoverBackground": "#eaeef2",
   "--vscode-list-hoverForeground": "#24292f",
   "--vscode-input-background": "#ffffff",
-  "--vscode-input-foreground": "#24292f"
+  "--vscode-input-foreground": "#24292f",
+  "--vscode-button-background": "#0969da",
+  "--vscode-button-foreground": "#ffffff"
 };
 
 const darkTheme = {
@@ -43,7 +46,9 @@ const darkTheme = {
   "--vscode-list-hoverBackground": "#393541",
   "--vscode-list-hoverForeground": "#f0edf4",
   "--vscode-input-background": "#1f1e24",
-  "--vscode-input-foreground": "#e6e2eb"
+  "--vscode-input-foreground": "#e6e2eb",
+  "--vscode-button-background": "#3b76c4",
+  "--vscode-button-foreground": "#ffffff"
 };
 
 const preview: Preview = {
@@ -68,8 +73,20 @@ const preview: Preview = {
     (story, context) => ({
       components: { Story: story() },
       setup() {
-        const dark = context.globals.vscodeTheme !== "light";
-        return { dark, theme: dark ? darkTheme : lightTheme };
+        const dark = computed(() => context.globals.vscodeTheme !== "light");
+        const theme = computed(() => dark.value ? darkTheme : lightTheme);
+        watchEffect(() => {
+          const root = document.documentElement;
+          const body = document.body;
+          for (const [key, value] of Object.entries(theme.value)) {
+            if (key.startsWith("--")) root.style.setProperty(key, value);
+          }
+          root.classList.toggle("vscode-dark", dark.value);
+          root.classList.toggle("vscode-light", !dark.value);
+          body.classList.toggle("vscode-dark", dark.value);
+          body.classList.toggle("vscode-light", !dark.value);
+        });
+        return { dark, theme };
       },
       template: `
         <div class="storybook-vscode-root" :class="{ 'vscode-dark': dark, 'vscode-light': !dark }" :style="theme">
@@ -87,7 +104,7 @@ const preview: Preview = {
       }
     },
     a11y: {
-      test: "todo"
+      test: "error"
     }
   }
 };

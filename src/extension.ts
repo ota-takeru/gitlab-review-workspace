@@ -26,7 +26,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const sidebar = new SidebarProvider(context, store, {
     openFile: (filePath, line, threadId) => void nativeReview.openFile(filePath, line, threadId),
     openBranchFile: (branch, filePath) => branchFiles.open(branch, filePath),
-    openCommitDiffFile: (commitId, filePath) => filePanels.openCommitFile(commitId, filePath),
+    openCommitDiffFile: (commitId, filePath) => nativeReview.openCommitFile(commitId, filePath),
+    openNewChangesFile: (filePath) => nativeReview.openNewChangesFile(filePath),
     getActiveFilePath: () => nativeReview.getActiveFilePath(),
     onDidChangeActiveFile: nativeReview.onDidChangeActiveFile
   }, glabAuth, localGit, myWork, commentImages);

@@ -7,6 +7,7 @@ import { ReviewStore } from "./reviewStore";
 import { configureWebview } from "./webviewHost";
 import type {
   HostMessage,
+  ReviewFileHostMessage,
   ReviewFileMessage,
   ReviewFileViewState
 } from "./webviewProtocol";
@@ -48,6 +49,7 @@ export class ReviewFilePanelManager implements vscode.Disposable {
   }
 
   openFile(filePath: string, line?: number, threadId?: string): void {
+    this.store.markFileViewed(filePath);
     const existing = this.panels.get(filePath);
     if (existing) {
       existing.openReview(line, threadId);
@@ -71,6 +73,7 @@ export class ReviewFilePanelManager implements vscode.Disposable {
   async openCommitFile(commitId: string, filePath: string): Promise<void> {
     try {
       const context = await this.store.loadCommitFileReviewContext(commitId, filePath);
+      this.store.markFileViewed(filePath);
       const existing = this.panels.get(filePath);
       if (existing) {
         existing.openCommit(context);
@@ -289,6 +292,7 @@ class ReviewFilePanel {
       viewModel,
       targetLine,
       targetThreadId,
+      submissionMode: this.store.getSubmissionMode(),
       commit: this.commitContext?.commit,
       newChanges: newChanges ? {
         ...newChanges,
@@ -344,18 +348,37 @@ class ReviewFilePanel {
         return;
       case "saveLocalEdit":
         if (!this.canEditLocally()) {
-          this.mode = "review";
+          this.postLocalEditSaveResult({
+            type: "localEditSaveResult",
+            requestId: message.requestId,
+            ok: false,
+            errorMessage: "The local branch is no longer available for editing. Your draft is still in the editor."
+          });
           this.postState();
           return;
         }
-        await this.store.saveLocalEdit(this.filePath, message.text);
-        this.mode = "review";
-        this.postState();
+        try {
+          await this.store.saveLocalEdit(this.filePath, message.text);
+          this.postLocalEditSaveResult({ type: "localEditSaveResult", requestId: message.requestId, ok: true });
+          this.mode = "review";
+          this.postState();
+        } catch (error) {
+          this.postLocalEditSaveResult({
+            type: "localEditSaveResult",
+            requestId: message.requestId,
+            ok: false,
+            errorMessage: error instanceof Error ? error.message : "Could not save the local edit."
+          });
+        }
         return;
       case "clearLocalEdit":
-        await this.store.clearLocalEdit(this.filePath);
-        this.mode = "review";
-        this.postState();
+        try {
+          await this.store.clearLocalEdit(this.filePath);
+          this.mode = "review";
+          this.postState();
+        } catch {
+          void vscode.window.showErrorMessage("ローカル編集を破棄できませんでした。保存済みの編集内容は保持されています。");
+        }
         return;
       case "addComment":
         await this.store.addComment(message.threadId, message.body);
@@ -371,14 +394,25 @@ class ReviewFilePanel {
           this.filePath,
           message.mrLine,
           this.reviewRange === "new" ? undefined : message.oldLine,
-          message.body
+          message.body,
+          message.mode ?? this.store.getSubmissionMode()
         );
+        return;
+      case "setSubmissionMode":
+        this.store.setSubmissionMode(message.mode);
+        this.postState();
         return;
       case "uploadCommentImage":
       case "resolveCommentImage":
         await this.handleCommentImage(message);
         return;
     }
+  }
+
+  private postLocalEditSaveResult(message: ReviewFileHostMessage): void {
+    void this.panel.webview.postMessage(
+      message satisfies HostMessage<ReviewFileViewState, ReviewFileHostMessage>
+    );
   }
 
   private async loadFullFile(): Promise<boolean> {
