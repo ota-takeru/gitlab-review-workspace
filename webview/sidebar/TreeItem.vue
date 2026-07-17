@@ -18,6 +18,10 @@ const emit = defineEmits<{
 const expanded = ref(false);
 
 function isTree(): boolean { return props.node.type === "tree"; }
+function containsNewChanges(node: BranchTreeNode | ChangedFileTreeNode): boolean {
+  if (node.type === "file") return "file" in node && Boolean(node.file?.newSinceLastReview);
+  return node.children.some(containsNewChanges);
+}
 function open(): void {
   if (isTree()) return;
   if (props.kind === "changed") emit("openChanged", props.node.path);
@@ -35,6 +39,7 @@ function syncExpanded(event: Event): void {
       <GlIcon class="directory-chevron" name="chevron-right" :size="12" />
       <GlIcon class="directory-icon" name="folder" :size="14" />
       <span class="tree-name">{{ node.name }}</span>
+      <span v-if="kind === 'changed' && containsNewChanges(node)" class="new-file-mark" title="Contains changes since the last completed review">NEW</span>
       <span class="directory-count">{{ node.children.length }}</span>
     </summary>
     <div v-if="expanded" class="tree-children">
@@ -62,12 +67,15 @@ function syncExpanded(event: Event): void {
     <GlIcon name="file" :size="14" />
     <span class="tree-name">{{ node.name }}</span>
     <span v-if="kind === 'changed' && 'file' in node && node.file" class="file-stats">
+      <span v-if="node.file.newSinceLastReview" class="new-file-mark" title="Changed since the last completed review">NEW</span>
       <span v-if="node.file.additions" class="gl-text-success">+{{ node.file.additions }}</span>
       <span v-if="node.file.deletions" class="gl-text-danger">−{{ node.file.deletions }}</span>
-      <span v-if="node.file.unresolvedThreadCount" class="discussion-count" :title="`${node.file.unresolvedThreadCount}件の未解決コメント`">
+      <span v-if="node.file.unresolvedThreadCount" class="discussion-count" :title="`${node.file.unresolvedThreadCount} unresolved comments`">
         <GlIcon name="comments" :size="12" />{{ node.file.unresolvedThreadCount }}
       </span>
-      <GlIcon v-if="node.file.hasLocalEdit" class="local-edit-mark" name="pencil" :size="12" label="ローカル編集あり" />
+      <GlIcon v-if="node.file.viewed" class="viewed-mark" name="check-circle" :size="12" label="Viewed" />
+      <span v-else class="unviewed-mark" role="img" aria-label="Unviewed" title="Unviewed" />
+      <GlIcon v-if="node.file.hasLocalEdit" class="local-edit-mark" name="pencil" :size="12" label="Local edit available" />
     </span>
   </button>
 </template>
@@ -93,7 +101,7 @@ function syncExpanded(event: Event): void {
 .tree-directory > summary:hover, .tree-file:hover { color:var(--gl-hover-text); background:var(--gl-hover-surface); }
 .tree-file { padding: 0 var(--gl-spacing-4) 0 21px; background: transparent; cursor: pointer; }
 .tree-name { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.directory-count { min-width: 16px; color: var(--gl-text-subtle); font: 9px var(--vscode-font-family); text-align: right; }
+.directory-count { min-width: 16px; color: var(--gl-text-subtle); font: 10px var(--vscode-font-family); text-align: right; }
 .tree-children { display: grid; margin-left: 10px; padding-left: 8px; border-left: 1px solid var(--gl-border-subtle); }
 .active-file {
   color: var(--gl-selected-text);
@@ -101,8 +109,11 @@ function syncExpanded(event: Event): void {
   box-shadow: inset 3px 0 var(--gl-changed-accent);
 }
 .active-file > :first-child { color: var(--gl-changed-accent); }
-.file-stats { display:inline-flex; gap:var(--gl-spacing-8); align-items:center; color:var(--gl-text-subtle); font-size:10px; white-space:nowrap; }
+.file-stats { display:inline-flex; gap:var(--gl-spacing-8); align-items:center; color:var(--gl-text-subtle); font-size:11px; white-space:nowrap; }
+.new-file-mark { color: var(--gl-feedback-warning); font-size: 10px; font-weight: 700; letter-spacing: .04em; }
 .discussion-count { display:inline-flex; align-items:center; gap:var(--gl-spacing-2); color:var(--gl-thread-accent); font-weight:600; }
+.viewed-mark { color: var(--gl-feedback-success); }
+.unviewed-mark { width: 6px; height: 6px; flex: none; border: 1px solid var(--gl-text-subtle); border-radius: 50%; }
 .local-edit-mark { color:var(--gl-local-accent); }
 
 @media (forced-colors: active) {

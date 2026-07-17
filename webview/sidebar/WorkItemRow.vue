@@ -51,7 +51,7 @@ function relativeTime(value?: string): string {
       <GlIcon name="arrow-right" :size="12" />
       <span class="gl-truncate">{{ item.targetProjectPath }}:{{ item.targetBranch }}</span>
     </div>
-    <div class="work-meta"><span>{{ item.commitCount }} commits</span><span>Open MRなし</span></div>
+  <div class="work-meta"><span>{{ item.commitCount }} commits</span><span>No open MR</span></div>
   </article>
 
   <button
@@ -98,11 +98,11 @@ function relativeTime(value?: string): string {
 .mr-row:hover { background: var(--gl-hover-surface); border-color: var(--gl-border-strong); }
 .candidate-row { border-left-color: var(--gl-accent-purple); background: color-mix(in srgb, var(--gl-accent-purple) 5%, var(--gl-surface-raised)); }
 .work-row-topline { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--gl-spacing-8); }
-.work-row-topline time { flex: none; color: var(--gl-text-subtle); font-size: 9px; }
+.work-row-topline time { flex: none; color: var(--gl-text-subtle); font-size: 10px; }
 .work-badges { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: var(--gl-spacing-2); }
 .work-reference { color: var(--gl-text-link); font: 600 10px var(--vscode-editor-font-family); }
 .work-title { color: var(--gl-text-strong); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
-.work-flow { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 9px; }
+.work-flow { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 10px; }
 .work-flow code, .work-flow span { min-width: 0; font-size: inherit; }
-.work-meta { display: flex; flex-wrap: wrap; gap: var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 9px; }
+.work-meta { display: flex; flex-wrap: wrap; gap: var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 10px; }
 </style>

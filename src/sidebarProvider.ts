@@ -21,6 +21,7 @@ export interface ReviewNavigator {
   openFile(filePath: string, line?: number, threadId?: string): void;
   openBranchFile(branch: string, filePath: string): Promise<void>;
   openCommitDiffFile(commitId: string, filePath: string): Promise<void>;
+  openNewChangesFile(filePath: string): Promise<void>;
   getActiveFilePath(): string | undefined;
   onDidChangeActiveFile: vscode.Event<string | undefined>;
 }
@@ -153,7 +154,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private async handleMessage(message: SidebarMessage): Promise<void> {
     switch (message.type) {
       case "ready": this.pushUpdate(); return;
-      case "openFile": this.navigator.openFile(message.filePath, message.line, message.threadId); return;
+      case "openFile":
+        this.store.markFileViewed(message.filePath);
+        this.navigator.openFile(message.filePath, message.line, message.threadId);
+        return;
       case "toggleBranchTree": await this.toggleBranchTree(message.branch); return;
       case "closeBranchTree":
         this.branchTreeRequestId += 1;
@@ -162,10 +166,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         return;
       case "openBranchFile": await this.navigator.openBranchFile(message.branch, message.filePath); return;
       case "openCommitFile": await this.navigator.openCommitDiffFile(message.commitId, message.filePath); return;
+      case "openNewChangesFile": await this.navigator.openNewChangesFile(message.filePath); return;
       case "addComment": await this.store.addComment(message.threadId, message.body); return;
       case "addOverviewThread": await this.store.addOverviewThread(message.body, message.mode); return;
+      case "setSubmissionMode": this.store.setSubmissionMode(message.mode); return;
       case "publishReviewDraft": await this.store.publishReviewDraft(message.draftId); return;
       case "submitReview": await this.store.submitReview(); return;
+      case "markReviewComplete": this.store.markReviewComplete(); return;
       case "editComment": await this.store.editComment(message.threadId, message.commentId, message.body); return;
       case "toggleResolved": await this.store.toggleResolved(message.threadId); return;
       case "setThreadExpanded":

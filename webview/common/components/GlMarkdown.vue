@@ -35,7 +35,7 @@ function updateImages(): void {
     if (!path) {
       image.tabIndex = 0;
       image.setAttribute("role", "button");
-      image.setAttribute("aria-label", `${image.alt || "Comment image"}を原寸表示`);
+    image.setAttribute("aria-label", `View ${image.alt || "comment image"} at full size`);
       image.dataset.lightboxImage = "true";
       return;
     }
@@ -46,7 +46,7 @@ function updateImages(): void {
       image.src = state.displayUri;
       image.tabIndex = 0;
       image.setAttribute("role", "button");
-      image.setAttribute("aria-label", `${image.alt || "Comment image"}を原寸表示`);
+    image.setAttribute("aria-label", `View ${image.alt || "comment image"} at full size`);
       image.dataset.lightboxImage = "true";
       image.removeAttribute("aria-busy");
       return;
@@ -151,8 +151,8 @@ onBeforeUnmount(() => {
 <template>
   <!-- renderMarkdown escapes untrusted text before adding this small tag subset. -->
   <div ref="container" class="gl-markdown" v-html="rendered" @click="onClick" @keydown="onKeydown" @copy="onCopy" />
-  <div v-if="lightboxUri" class="image-lightbox" role="dialog" aria-modal="true" :aria-label="`${lightboxAlt}の原寸表示`" @click.self="closeLightbox">
-    <button type="button" class="lightbox-close" aria-label="画像を閉じる" @click="closeLightbox">×</button>
+  <div v-if="lightboxUri" class="image-lightbox" role="dialog" aria-modal="true" :aria-label="`View ${lightboxAlt} at full size`" @click.self="closeLightbox">
+    <button type="button" class="lightbox-close" aria-label="Close image" @click="closeLightbox">×</button>
     <img :src="lightboxUri" :alt="lightboxAlt">
   </div>
 </template>

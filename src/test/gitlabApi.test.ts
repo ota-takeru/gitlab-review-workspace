@@ -288,6 +288,70 @@ test("draft review methods create, publish, and bulk publish GitLab draft notes"
   }
 });
 
+test("createDraftThread sends diff position fields to the draft notes endpoint", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  let receivedArgs: string[] | undefined;
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      receivedArgs = args;
+      return { ok: true, stdout: JSON.stringify({ id: 72, note: "Inline pending", position: { new_path: "src/app.ts", new_line: 18 } }) };
+    }
+  });
+
+  try {
+    const client = new GitLabReviewClient("gitlab.example.com");
+    const review = {
+      id: "group/project!4",
+      projectId: "group/project",
+      mergeRequestIid: 4,
+      title: "MR",
+      state: "opened" as const,
+      sourceBranch: "source",
+      targetBranch: "main",
+      author: "me",
+      reviewers: [],
+      commits: [],
+      files: [],
+      threads: [],
+      diffRefs: { baseSha: "base", startSha: "start", headSha: "head" }
+    };
+    const file = {
+      path: "src/app.ts",
+      language: "typescript",
+      oldPath: "src/app.ts",
+      newPath: "src/app.ts",
+      status: "modified" as const,
+      newFile: false,
+      deletedFile: false,
+      renamedFile: false,
+      collapsed: false,
+      tooLarge: false,
+      generatedFile: false,
+      additions: 1,
+      deletions: 1
+    };
+    const draft = await client.createDraftThread(review, file, 18, 17, "Inline pending");
+    assert.deepEqual(draft, { id: "72", body: "Inline pending", filePath: "src/app.ts", line: 18 });
+    assert.deepEqual(receivedArgs, [
+      "api", "--hostname", "gitlab.example.com", "--method", "POST",
+      "projects/group%2Fproject/merge_requests/4/draft_notes",
+      "--raw-field", "note=Inline pending",
+      "--raw-field", "position[base_sha]=base",
+      "--raw-field", "position[start_sha]=start",
+      "--raw-field", "position[head_sha]=head",
+      "--raw-field", "position[position_type]=text",
+      "--raw-field", "position[old_path]=src/app.ts",
+      "--raw-field", "position[new_path]=src/app.ts",
+      "--raw-field", "position[new_line]=18",
+      "--raw-field", "position[old_line]=17",
+      "--output", "json"
+    ]);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
 test("listMergeRequestCommits requests the paginated MR commits endpoint", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   let receivedArgs: string[] | undefined;

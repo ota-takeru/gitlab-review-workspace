@@ -31,28 +31,27 @@ function codeFor(line?: GlDiffSideLine): string {
 </script>
 
 <template>
-  <section
+  <div
     class="gl-diff-side-by-side"
-    role="table"
+    role="region"
     :aria-label="props.ariaLabel ?? props['aria-label'] ?? 'Side-by-side diff'"
   >
-    <div class="gl-diff-side-by-side-header" role="row">
-      <div role="columnheader">{{ props.leftLabel ?? 'Before' }}</div>
-      <div role="columnheader">{{ props.rightLabel ?? 'After' }}</div>
+    <div class="gl-diff-side-by-side-header">
+      <div>{{ props.leftLabel ?? 'Before' }}</div>
+      <div>{{ props.rightLabel ?? 'After' }}</div>
     </div>
 
     <template v-for="(row, index) in props.rows" :key="row.key">
       <slot name="row" :row="row" :index="index">
-        <div v-if="row.fullWidth" class="gl-diff-side-by-side-full" role="row">
-          <code role="cell">{{ row.left?.text ?? row.right?.text ?? ' ' }}</code>
+        <div v-if="row.fullWidth" class="gl-diff-side-by-side-full">
+          <code>{{ row.left?.text ?? row.right?.text ?? ' ' }}</code>
         </div>
-        <div v-else class="gl-diff-side-by-side-row" role="row">
+        <div v-else class="gl-diff-side-by-side-row">
           <div
             v-for="(side, sideIndex) in [row.left, row.right]"
             :key="`${row.key}-${sideIndex}`"
             class="gl-diff-side-by-side-side"
             :class="side?.kind ?? 'empty'"
-            role="cell"
           >
             <span class="gl-diff-side-by-side-line-number">{{ side?.line ?? '' }}</span>
             <span class="gl-diff-side-by-side-marker" aria-hidden="true">{{ markerFor(side) }}</span>
@@ -61,7 +60,7 @@ function codeFor(line?: GlDiffSideLine): string {
         </div>
       </slot>
     </template>
-  </section>
+  </div>
 </template>
 
 <style scoped>
@@ -83,7 +82,7 @@ function codeFor(line?: GlDiffSideLine): string {
   border-bottom: 1px solid var(--gl-border-default);
   color: var(--gl-text-subtle);
   background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
-  font-size: 9px;
+  font-size: 10px;
   line-height: 20px;
   text-transform: uppercase;
 }

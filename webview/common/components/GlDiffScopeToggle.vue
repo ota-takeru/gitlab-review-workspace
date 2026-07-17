@@ -21,7 +21,7 @@ const emit = defineEmits<{ "update:modelValue": [value: GlDiffScope] }>();
       :aria-pressed="modelValue === 'changes'"
       @click="emit('update:modelValue', 'changes')"
     >
-      <GlIcon name="code" :size="12" />変更周辺
+      <GlIcon name="code" :size="12" />Changed lines
     </button>
     <button
       type="button"
@@ -29,11 +29,11 @@ const emit = defineEmits<{ "update:modelValue": [value: GlDiffScope] }>();
       :class="{ active: modelValue === 'file' }"
       :aria-pressed="modelValue === 'file'"
       :disabled="!fullFileAvailable || loading"
-      :title="fullFileAvailable ? 'ファイル全体を表示' : 'ファイル全体を読み込むにはクリック'"
+      :title="fullFileAvailable ? 'Show entire file' : 'Click to load the entire file'"
       @click="emit('update:modelValue', 'file')"
     >
       <GlIcon v-if="loading" name="spinner" class="spin" :size="12" />
-      <GlIcon v-else name="file" :size="12" />ファイル全体
+      <GlIcon v-else name="file" :size="12" />Entire file
     </button>
   </div>
 </template>

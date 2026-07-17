@@ -192,6 +192,7 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
         targetLine: line
       });
       if (!viewModel) throw new Error("The review file is unavailable.");
+      this.store.markFileViewed(viewModel.file.path);
 
       const key = sessionKey(selected.projectId, selected.iid, viewModel.file.path);
       const base = this.createVirtualDocument(
@@ -233,6 +234,10 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
       const targetThread = threadId
         ? viewModel.threads.find((thread) => thread.id === threadId)
         : undefined;
+      if (targetThread) {
+        const nativeTargetThread = session.threads.get(targetThread.id);
+        if (nativeTargetThread) nativeTargetThread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+      }
       const targetLocation = targetThread ? nativeThreadLocation(targetThread) : undefined;
       const targetLine = targetLocation?.line ?? line;
       const selection = typeof targetLine === "number" && targetLine > 0
@@ -249,6 +254,90 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
     } catch {
       void vscode.window.showErrorMessage(`VS Code の差分エディターで ${filePath} を開けませんでした。`);
     }
+  }
+
+  async openCommitFile(commitId: string, filePath: string): Promise<void> {
+    const overview = this.store.getOverview();
+    const selected = overview.selectedMergeRequest;
+    if (!selected) {
+      void vscode.window.showInformationMessage("No merge request is selected.");
+      return;
+    }
+    try {
+      const context = await this.store.loadCommitFileReviewContext(commitId, filePath);
+      const contents = await this.store.loadCommitFileContents(commitId, context.file);
+      this.store.markFileViewed(context.file.path);
+      const viewModel = this.store.buildCommitFileViewModel({ ...context, contents }, { targetLine: undefined });
+      await this.openVirtualComparison(
+        selected.projectId,
+        selected.iid,
+        viewModel.file,
+        contents.oldText,
+        contents.newText,
+        `commit:${commitId}:${viewModel.file.path}`,
+        `${path.basename(viewModel.file.path)} — commit ${context.commit.shortId}`
+      );
+    } catch {
+      void vscode.window.showErrorMessage(`VS Code の差分エディターで ${filePath} を開けませんでした。`);
+    }
+  }
+
+  async openNewChangesFile(filePath: string): Promise<void> {
+    const overview = this.store.getOverview();
+    const selected = overview.selectedMergeRequest;
+    if (!selected) {
+      void vscode.window.showInformationMessage("No merge request is selected.");
+      return;
+    }
+    try {
+      const context = await this.store.loadNewChangesFileReviewContext(filePath);
+      if (!context) throw new Error("The file is not part of the latest push.");
+      const contents = await this.store.loadNewChangesFileContents(context);
+      this.store.markFileViewed(context.file.path);
+      const viewModel = this.store.buildNewChangesFileViewModel({ ...context, contents });
+      await this.openVirtualComparison(
+        selected.projectId,
+        selected.iid,
+        viewModel.file,
+        contents.oldText,
+        contents.newText,
+        `new-changes:${context.range.fromSha}:${context.range.toSha}:${viewModel.file.path}`,
+        `${path.basename(viewModel.file.path)} — latest push`
+      );
+    } catch {
+      void vscode.window.showErrorMessage(`VS Code の差分エディターで最新pushの ${filePath} を開けませんでした。`);
+    }
+  }
+
+  private async openVirtualComparison(
+    projectId: string,
+    mergeRequestIid: number,
+    file: ReviewFileView,
+    oldText: string,
+    newText: string,
+    key: string,
+    title: string
+  ): Promise<void> {
+    const base = this.createVirtualDocument(key, projectId, mergeRequestIid, file.path, "base", oldText, false);
+    const head = this.createVirtualDocument(key, projectId, mergeRequestIid, file.path, "head", newText, !file.deletedFile);
+    const previous = this.sessions.get(key);
+    const session: NativeReviewSession = {
+      key,
+      projectId,
+      mergeRequestIid,
+      filePath: file.path,
+      file,
+      base,
+      head,
+      threads: previous?.threads ?? new Map()
+    };
+    this.sessions.set(key, session);
+    if (this.activeFilePath !== file.path) {
+      this.activeFilePath = file.path;
+      this.onDidChangeActiveFileEmitter.fire(this.activeFilePath);
+    }
+    this.syncSessionThreads(session);
+    await vscode.commands.executeCommand("vscode.diff", base.uri, head.uri, title, { preview: true });
   }
 
   dispose(): void {
@@ -273,7 +362,8 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
     const uri = vscode.Uri.from({
       scheme: this.scheme,
       authority: "review",
-      path: `/${encodeURIComponent(projectId)}/${mergeRequestIid}/${side}/${filePath}`
+      path: `/${encodeURIComponent(projectId)}/${mergeRequestIid}/${side}/${filePath}`,
+      query: encodeURIComponent(key)
     });
     const document: NativeReviewDocument = {
       uri,
@@ -508,7 +598,7 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
     });
     const oldLine = viewModel ? oldLineForMrLine(viewModel.lines, mrLine) : undefined;
     thread.dispose();
-    await this.store.addThread(document.filePath, mrLine, oldLine, trimmed);
+    await this.store.addThread(document.filePath, mrLine, oldLine, trimmed, this.store.getSubmissionMode());
   }
 
   private async uploadAndSubmit(reply: vscode.CommentReply): Promise<void> {

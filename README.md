@@ -15,6 +15,7 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 - 差分行のクリック・ドラッグ選択からディスカッションを作成
 - VS Code標準diff editorでMR差分を開き、Comment APIからディスカッションを作成・返信
 - コメントの返信、編集、Resolve/Reopen
+- Changed filesをパスと状態（新規push・未確認・確認済み・未解決・ローカル編集）で絞り込み
 - MR内のレビューコメントを本文・投稿者・ファイルパスで検索
 - GitLab Todo通知から対象MRへ移動
 - ソース/ターゲットブランチのファイルツリーを閲覧

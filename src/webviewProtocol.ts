@@ -57,6 +57,7 @@ export interface ReviewFileViewState {
   viewModel?: FileReviewViewModel;
   targetLine?: number;
   targetThreadId?: string;
+  submissionMode?: ReviewSubmissionMode;
   commit?: ReviewCommit;
   newChanges?: ReviewUpdateRange & {
     selected: "all" | "new";
@@ -79,6 +80,9 @@ export type HostMessage<T, TExtra = never> =
   | CommentImageHostMessage
   | TExtra;
 export type SidebarHostMessage = { type: "revealThread"; threadId: string };
+export type ReviewFileHostMessage =
+  | { type: "localEditSaveResult"; requestId: string; ok: true }
+  | { type: "localEditSaveResult"; requestId: string; ok: false; errorMessage: string };
 export type ReadyMessage = { type: "ready" };
 export type CommitDiffMessage = ReadyMessage | { type: "loadFullFile" };
 
@@ -89,10 +93,13 @@ export type SidebarMessage =
   | { type: "closeBranchTree" }
   | { type: "openBranchFile"; branch: string; filePath: string }
   | { type: "openCommitFile"; commitId: string; filePath: string }
+  | { type: "openNewChangesFile"; filePath: string }
   | { type: "addComment"; threadId: string; body: string }
   | { type: "addOverviewThread"; body: string; mode: ReviewSubmissionMode }
+  | { type: "setSubmissionMode"; mode: ReviewSubmissionMode }
   | { type: "publishReviewDraft"; draftId: string }
   | { type: "submitReview" }
+  | { type: "markReviewComplete" }
   | { type: "editComment"; threadId: string; commentId: string; body: string }
   | { type: "toggleResolved"; threadId: string }
   | { type: "setThreadExpanded"; threadId: string; expanded: boolean }
@@ -120,10 +127,11 @@ export type ReviewFileMessage =
   | { type: "setReviewRange"; range: "all" | "new" }
   | { type: "enterEdit" }
   | { type: "cancelEdit" }
-  | { type: "saveLocalEdit"; text: string }
+  | { type: "saveLocalEdit"; requestId: string; text: string }
   | { type: "clearLocalEdit" }
   | { type: "addComment"; threadId: string; body: string }
   | { type: "editComment"; threadId: string; commentId: string; body: string }
   | { type: "toggleResolved"; threadId: string }
-  | { type: "addThread"; body: string; mrLine: number; oldLine?: number }
+  | { type: "addThread"; body: string; mrLine: number; oldLine?: number; mode?: ReviewSubmissionMode }
+  | { type: "setSubmissionMode"; mode: ReviewSubmissionMode }
   | CommentImageWebviewMessage;

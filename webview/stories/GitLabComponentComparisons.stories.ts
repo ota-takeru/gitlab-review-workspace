@@ -325,8 +325,8 @@ export const DiffControls: Story = {
   play: async (context) => {
     await comparisonPlay(comparisons.diff)(context);
     const canvas = within(context.canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "ファイル全体" }));
-    await expect(canvas.getByRole("button", { name: "ファイル全体" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(canvas.getByRole("button", { name: "Entire file" }));
+    await expect(canvas.getByRole("button", { name: "Entire file" })).toHaveAttribute("aria-pressed", "true");
   }
 };
 
@@ -350,7 +350,7 @@ export const CommentEditor: Story = {
     await comparisonPlay(comparisons.editor)(context);
     const canvas = within(context.canvasElement);
     await userEvent.click(canvas.getByRole("textbox", { name: "Comparison review comment" }));
-    await expect(canvas.getByRole("toolbar", { name: "Markdown書式" })).toBeVisible();
+    await expect(canvas.getByRole("toolbar", { name: "Markdown formatting" })).toBeVisible();
   }
 };
 

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from "vue";
 import { buildBranchTree } from "../../src/branchTreeUtils";
 import { isCommentEdited } from "../../src/commentUtils";
+import { buildChangedFileTree, compactChangedFileTree } from "../../src/reviewTreeUtils";
 import {
   formatRelativeReplyTime,
   isCommitDiffForSelection,
@@ -11,7 +12,7 @@ import {
   threadContentId
 } from "../../src/webviewViewModels";
 import type { MyWorkMergeRequest } from "../../src/myWorkTypes";
-import type { ReviewComment, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
+import type { ReviewComment, ReviewProgress, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
 import type { HostMessage, SidebarHostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlAvatarGroup from "../common/components/GlAvatarGroup.vue";
@@ -62,6 +63,9 @@ const overviewThreadModes = reactive<Record<string, ReviewSubmissionMode>>(saved
 const threadSearchQuery = ref("");
 const threadSearchOpen = ref(false);
 const threadSearchInput = ref<HTMLInputElement>();
+const changedFileSearchInput = ref<HTMLInputElement>();
+const changedFileQuery = ref("");
+const changedFileFilter = ref<"all" | "new" | "unviewed" | "viewed" | "unresolved" | "local">("all");
 const resolvedByThread = new Map<string, boolean>();
 const requestedThreadDetails = new Set<string>();
 let loadedMrKey = "";
@@ -85,6 +89,78 @@ const overviewThreadDraft = computed({
 });
 const overviewThreadMode = computed<ReviewSubmissionMode>(() => overviewThreadModes[mrKey.value] ?? "comment");
 const reviewSubmissionPending = computed(() => overview.value?.draftNotes.some((draft) => draft.pending) ?? false);
+const reviewProgress = computed<ReviewProgress>(() => {
+  const summary = overview.value;
+  if (!summary) {
+    return {
+      totalFiles: 0,
+      viewedFiles: 0,
+      unviewedFiles: 0,
+      totalDiscussions: 0,
+      resolvedDiscussions: 0,
+      unresolvedDiscussions: 0,
+      completionPercent: 0,
+      completionState: "not-started",
+      newSinceLastReview: false,
+      newCommitCount: 0
+    };
+  }
+  if (summary.progress) return summary.progress;
+  const viewedFiles = summary.files.filter((file) => file.viewed).length;
+  const totalDiscussions = summary.resolvedThreads + summary.unresolvedThreads;
+  const completionPercent = Math.round((
+    (summary.files.length === 0 ? 100 : viewedFiles / summary.files.length * 100)
+    + (totalDiscussions === 0 ? 100 : summary.resolvedThreads / totalDiscussions * 100)
+  ) / 2);
+  const next = summary.threads.find((thread) => !thread.resolved && thread.resolvable !== false);
+  const complete = viewedFiles === summary.files.length && summary.unresolvedThreads === 0;
+  return {
+    totalFiles: summary.files.length,
+    viewedFiles,
+    unviewedFiles: Math.max(0, summary.files.length - viewedFiles),
+    totalDiscussions,
+    resolvedDiscussions: summary.resolvedThreads,
+    unresolvedDiscussions: summary.unresolvedThreads,
+    completionPercent,
+    completionState: complete && summary.draftNotes.length > 0
+      ? "ready-to-submit"
+      : complete
+        ? "complete"
+        : viewedFiles > 0 || summary.resolvedThreads > 0
+          ? "in-progress"
+          : "not-started",
+    nextUnresolvedThread: next
+      ? { id: next.id, filePath: next.filePath, line: next.line ?? next.newLine }
+      : undefined,
+    newSinceLastReview: false,
+    newCommitCount: 0
+  };
+});
+const reviewProgressLabel = computed(() => {
+  switch (reviewProgress.value.completionState) {
+    case "complete": return "Complete";
+    case "ready-to-submit": return "Ready to submit";
+    case "in-progress": return "In progress";
+    default: return "Not started";
+  }
+});
+const reviewProgressTone = computed(() => {
+  switch (reviewProgress.value.completionState) {
+    case "complete": return "success" as const;
+    case "ready-to-submit": return "warning" as const;
+    case "in-progress": return "brand" as const;
+    default: return "neutral" as const;
+  }
+});
+const canMarkReviewComplete = computed(() => {
+  const progress = reviewProgress.value;
+  return (progress.completionState !== "complete"
+    || progress.newSinceLastReview
+    || !progress.lastReviewedSha)
+    && progress.unviewedFiles === 0
+    && progress.unresolvedDiscussions === 0
+    && (overview.value?.draftNotes.length ?? 0) === 0;
+});
 const commentProjectId = computed(() => overview.value?.selectedMergeRequest?.projectId);
 const normalizedThreadSearchQuery = computed(() => threadSearchQuery.value.trim().toLocaleLowerCase());
 const filteredThreads = computed(() => {
@@ -110,7 +186,21 @@ const selectedCommitDiffMatches = computed(() => {
 });
 const changedFiles = computed(() => overview.value?.files ?? []);
 const changedFileLimit = ref(200);
-const visibleChangedFiles = computed(() => changedFiles.value.slice(0, changedFileLimit.value));
+const normalizedChangedFileQuery = computed(() => changedFileQuery.value.trim().toLocaleLowerCase());
+const filteredChangedFiles = computed(() => {
+  const query = normalizedChangedFileQuery.value;
+  return changedFiles.value.filter((file) => {
+    if (query && !file.path.toLocaleLowerCase().includes(query)) return false;
+    if (changedFileFilter.value === "new" && !file.newSinceLastReview) return false;
+    if (changedFileFilter.value === "unviewed" && file.viewed) return false;
+    if (changedFileFilter.value === "viewed" && !file.viewed) return false;
+    if (changedFileFilter.value === "unresolved" && file.unresolvedThreadCount === 0) return false;
+    if (changedFileFilter.value === "local" && !file.hasLocalEdit) return false;
+    return true;
+  });
+});
+const visibleChangedFiles = computed(() => filteredChangedFiles.value.slice(0, changedFileLimit.value));
+const changedFileTree = computed(() => compactChangedFileTree(buildChangedFileTree(visibleChangedFiles.value)));
 const commitFileLimit = ref(200);
 const visibleCommitFiles = computed(() => (model.value?.commitDiff.files ?? []).slice(0, commitFileLimit.value));
 const localWorkspace = computed(() => model.value?.localWorkspace);
@@ -173,6 +263,10 @@ function toggleChangedFiles(): void {
   changedFilesExpanded.value = !changedFilesExpanded.value;
   persist();
 }
+function clearChangedFileSearch(): void {
+  changedFileQuery.value = "";
+  void nextTick(() => changedFileSearchInput.value?.focus());
+}
 function toggleCommits(): void {
   commitsExpanded.value = !commitsExpanded.value;
   persist();
@@ -224,6 +318,7 @@ function setOverviewThreadMode(mode: ReviewSubmissionMode): void {
   if (!mrKey.value) return;
   overviewThreadModes[mrKey.value] = mode;
   persist();
+  post({ type: "setSubmissionMode", mode });
 }
 function openThread(thread: ReviewThreadSummary): void {
   if (thread.filePath) post({ type: "openFile", filePath: thread.filePath, line: thread.line, threadId: thread.id });
@@ -288,7 +383,7 @@ async function toggleThreadSearch(): Promise<void> {
 function closeThreadSearchFromKeyboard(): void {
   threadSearchQuery.value = "";
   threadSearchOpen.value = false;
-  void nextTick(() => document.querySelector<HTMLButtonElement>(".thread-search-toggle button")?.focus());
+  void nextTick(() => document.querySelector<HTMLButtonElement>(".thread-search-control button")?.focus());
 }
 function reconcileThreads(threads: readonly ReviewThreadSummary[]): void {
   let changed = false;
@@ -329,6 +424,25 @@ function currentCommitId(): string {
 function openChangedFile(path: string): void {
   post({ type: "openFile", filePath: path });
 }
+function openNextUnresolved(): void {
+  const next = reviewProgress.value.nextUnresolvedThread;
+  if (!next) return;
+  if (next.filePath) {
+    post({ type: "openFile", filePath: next.filePath, line: next.line, threadId: next.id });
+    return;
+  }
+  void revealThread(next.id);
+}
+function openLatestChanges(): void {
+  const activeFile = changedFiles.value.find((file) => file.path === model.value?.activeFilePath);
+  const filePath = (activeFile?.newSinceLastReview ? activeFile.path : undefined)
+    ?? changedFiles.value.find((file) => file.newSinceLastReview)?.path
+    ?? changedFiles.value[0]?.path;
+  if (filePath) post({ type: "openNewChangesFile", filePath });
+}
+function markReviewComplete(): void {
+  if (canMarkReviewComplete.value) post({ type: "markReviewComplete" });
+}
 function openLocalTarget(): void {
   const target = localTarget.value;
   if (!target) return;
@@ -356,6 +470,26 @@ function beginResize(event: PointerEvent): void {
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", finish, { once: true });
+}
+function onResizerKeydown(event: KeyboardEvent): void {
+  const step = event.shiftKey ? 40 : 16;
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    changedFilesHeight.value = Math.max(110, changedFilesHeight.value - step);
+    persist();
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    changedFilesHeight.value = Math.min(640, changedFilesHeight.value + step);
+    persist();
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    changedFilesHeight.value = 110;
+    persist();
+  } else if (event.key === "End") {
+    event.preventDefault();
+    changedFilesHeight.value = 640;
+    persist();
+  }
 }
 function selectSidebarTab(tab: "review" | "my-work"): void {
   post({ type: "setSidebarTab", tab });
@@ -389,6 +523,8 @@ function receiveState(event: MessageEvent<HostMessage<SidebarViewState, SidebarH
     loadedMrKey = nextMrKey;
     threadSearchQuery.value = "";
     threadSearchOpen.value = false;
+    changedFileQuery.value = "";
+    changedFileFilter.value = "all";
     changedFileLimit.value = 200;
     commitFileLimit.value = 200;
     requestedThreadDetails.clear();
@@ -444,15 +580,15 @@ onBeforeUnmount(() => {
         <span>{{ model.auth.hostname }}</span>
       </span>
       <span class="top-toolbar" aria-label="GitLab actions">
-        <GlIconButton v-if="activeTab === 'review'" icon="retry" label="Merge requestを再読み込み" :loading="overview?.isRefreshing" @click="post({ type: 'refreshReview' })" />
-        <GlIconButton icon="account" label="ログイン状態を再確認" @click="post({ type: 'refreshAuth' })" />
+        <GlIconButton v-if="activeTab === 'review'" icon="retry" label="Reload merge request" :loading="overview?.isRefreshing" @click="post({ type: 'refreshReview' })" />
+        <GlIconButton icon="account" label="Refresh GitLab login" @click="post({ type: 'refreshAuth' })" />
       </span>
     </div>
     <div v-else-if="model" class="auth-prompt">
       <GlIcon name="account" />
       <span>{{ model.auth.phase === "checking" ? "Checking glab" : model.auth.phase === "signedOut" ? "Sign in to GitLab" : "glab unavailable" }}</span>
       <GlButton v-if="model.auth.phase === 'signedOut'" size="small" variant="confirm" @click="post({ type: 'login' })">Sign in</GlButton>
-      <GlIconButton icon="retry" label="ログイン状態を再確認" size="small" @click="post({ type: 'refreshAuth' })" />
+      <GlIconButton icon="retry" label="Refresh GitLab login" size="small" @click="post({ type: 'refreshAuth' })" />
     </div>
 
     <SidebarTabs
@@ -462,26 +598,30 @@ onBeforeUnmount(() => {
       @select="selectSidebarTab"
     />
 
-    <MyWorkView
-      v-if="activeTab === 'my-work' && model?.auth.phase === 'available'"
-      :state="model.myWork"
-      :initial-scroll-top="myWorkScrollTop"
-      @refresh="post({ type: 'refreshMyWork' })"
-      @open-mr="openMyWorkMergeRequest"
-      @scroll-position="updateMyWorkScrollPosition"
-    />
+    <div v-if="activeTab === 'my-work' && model?.auth.phase === 'available'" id="my-work-panel" role="tabpanel" aria-labelledby="my-work-tab">
+      <MyWorkView
+        :state="model.myWork"
+        :initial-scroll-top="myWorkScrollTop"
+        @refresh="post({ type: 'refreshMyWork' })"
+        @open-mr="openMyWorkMergeRequest"
+        @scroll-position="updateMyWorkScrollPosition"
+      />
+    </div>
 
-    <GlEmptyState v-if="activeTab === 'review' && (!overview || overview.loadState === 'loading')" title="Merge requestを読み込んでいます" icon="spinner" />
+    <GlEmptyState v-if="activeTab === 'review' && (!overview || overview.loadState === 'loading')" title="Loading merge request…" icon="spinner" />
     <GlEmptyState
       v-else-if="activeTab === 'review' && overview && overview.loadState !== 'ready'"
-      :title="overview.errorMessage || '表示できるMerge requestがありません'"
+      :title="overview.errorMessage || 'No merge request available'"
       icon="warning"
     >
-      <template #actions><GlButton icon="retry" @click="post({ type: 'refreshReview' })">再試行</GlButton></template>
+      <template #actions><GlButton icon="retry" @click="post({ type: 'refreshReview' })">Retry</GlButton></template>
     </GlEmptyState>
 
     <div
       v-else-if="activeTab === 'review' && overview?.selectedMergeRequest"
+      id="review-panel"
+      role="tabpanel"
+      aria-labelledby="review-tab"
       class="review-loaded"
       :class="{ 'branch-open': model?.branchTree.phase !== 'hidden' }"
     >
@@ -517,6 +657,48 @@ onBeforeUnmount(() => {
           <span><strong>{{ overview.commits.length }}</strong> commits</span>
           <span><strong>{{ overview.resolvedThreads }}/{{ overview.resolvedThreads + overview.unresolvedThreads }}</strong> resolved</span>
         </div>
+
+        <section class="review-progress" aria-label="Review progress">
+          <header class="review-progress-header">
+            <span class="review-progress-title"><GlIcon name="check-circle" :size="13" />Review progress</span>
+            <GlBadge :tone="reviewProgressTone" pill>{{ reviewProgressLabel }}</GlBadge>
+          </header>
+          <div
+            class="review-progress-bar"
+            role="progressbar"
+            aria-label="Review completion"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="reviewProgress.completionPercent"
+          >
+            <span :style="{ width: `${reviewProgress.completionPercent}%` }" />
+          </div>
+          <div class="review-progress-metrics">
+            <span><strong>{{ reviewProgress.viewedFiles }}/{{ reviewProgress.totalFiles }}</strong> files viewed</span>
+            <span><strong>{{ reviewProgress.resolvedDiscussions }}/{{ reviewProgress.totalDiscussions }}</strong> discussions resolved</span>
+          </div>
+          <div v-if="reviewProgress.newSinceLastReview" class="new-since-review" role="status">
+            <GlIcon name="notifications" :size="12" />
+            <span><strong>New since last review</strong><small>{{ reviewProgress.newCommitCount }} commit{{ reviewProgress.newCommitCount === 1 ? '' : 's' }}</small></span>
+            <GlButton size="small" variant="link" @click="openLatestChanges">Review new changes</GlButton>
+          </div>
+          <div class="review-progress-actions">
+            <GlButton
+              v-if="reviewProgress.nextUnresolvedThread"
+              size="small"
+              variant="link"
+              icon="warning"
+              @click="openNextUnresolved"
+            >Next unresolved</GlButton>
+            <GlButton
+              v-if="canMarkReviewComplete"
+              size="small"
+              variant="confirm"
+              icon="check"
+              @click="markReviewComplete"
+            >Mark review complete</GlButton>
+          </div>
+        </section>
       </header>
 
       <section class="local-workspace" aria-label="Local workspace" :title="localWorkspace?.repositoryRoot">
@@ -539,17 +721,17 @@ onBeforeUnmount(() => {
             :icon="localTarget?.kind === 'existing-worktree' ? 'external-link' : 'branch'"
             @click="openLocalTarget"
           >{{ localActionLabel }}</GlButton>
-          <GlIconButton icon="retry" label="ローカルGit状態を更新" size="small" @click="post({ type: 'refreshLocalWorkspace' })" />
+          <GlIconButton icon="retry" label="Refresh local Git state" size="small" @click="post({ type: 'refreshLocalWorkspace' })" />
         </div>
         <p v-if="localWorkspace?.errorMessage" class="local-state-message is-danger"><GlIcon name="warning" :size="12" />{{ localWorkspace.errorMessage }}</p>
-        <p v-else-if="localTarget?.kind === 'different-repository'" class="local-help">このMRとは異なるrepositoryです。</p>
-        <p v-else-if="localTarget?.kind === 'missing'" class="local-help">対応するlocalまたはremote branchがありません。</p>
+        <p v-else-if="localTarget?.kind === 'different-repository'" class="local-help">This workspace points to a different repository.</p>
+        <p v-else-if="localTarget?.kind === 'missing'" class="local-help">No matching local or remote branch is available.</p>
       </section>
 
       <GlSection v-if="model?.branchTree.phase !== 'hidden'" class="branch-explorer" :title="model?.branchTree.branch || 'Branch'" flush>
         <template #icon><GlIcon name="file-tree" /></template>
-        <template #actions><GlIconButton icon="close" label="ブランチツリーを閉じる" size="small" @click="post({ type: 'closeBranchTree' })" /></template>
-        <p v-if="model?.branchTree.phase === 'loading'" class="state-message"><GlIcon name="spinner" class="spin" /> 取得中</p>
+        <template #actions><GlIconButton icon="close" label="Close branch tree" size="small" @click="post({ type: 'closeBranchTree' })" /></template>
+        <p v-if="model?.branchTree.phase === 'loading'" class="state-message"><GlIcon name="spinner" class="spin" /> Loading…</p>
         <p v-else-if="model?.branchTree.phase === 'error'" class="state-message is-danger">{{ model.branchTree.errorMessage }}</p>
         <div v-else class="tree">
           <TreeItem
@@ -579,28 +761,64 @@ onBeforeUnmount(() => {
           </span>
         </button>
         <div v-if="changedFilesExpanded" id="changed-files-content" class="collapsible-section-content">
-          <GlEmptyState v-if="!changedFiles.length" title="No changed files" icon="file" compact />
-          <div v-else class="changed-scroll changed-flat-list" :class="{ scrollable: changedFiles.length > 4 }">
-            <button
-              v-for="file in visibleChangedFiles"
-              :key="file.path"
-              type="button"
-              class="changed-flat-file"
-              :class="{ 'active-file': model?.activeFilePath === file.path }"
-              :title="file.path"
-              @click="openChangedFile(file.path)"
-            >
-              <GlIcon name="file" :size="14" />
-              <span class="changed-flat-path gl-truncate">{{ file.path }}</span>
-              <span class="file-stats">
-                <span v-if="file.additions" class="gl-text-success">+{{ file.additions }}</span>
-                <span v-if="file.deletions" class="gl-text-danger">−{{ file.deletions }}</span>
-                <span v-if="file.unresolvedThreadCount" class="discussion-count"><GlIcon name="comments" :size="12" />{{ file.unresolvedThreadCount }}</span>
-                <GlIcon v-if="file.hasLocalEdit" class="local-edit-mark" name="pencil" :size="12" label="ローカル編集あり" />
-              </span>
-            </button>
+          <div v-if="changedFiles.length" class="changed-file-tools" role="search" aria-label="Changed file filters">
+            <div class="changed-file-search">
+              <GlIcon name="search" :size="13" aria-hidden="true" />
+              <input
+                ref="changedFileSearchInput"
+                v-model="changedFileQuery"
+                class="gl-input"
+                type="search"
+                aria-label="Search changed files"
+                placeholder="Filter files…"
+                @keydown.esc="changedFileQuery = ''"
+              >
+              <GlIconButton v-if="changedFileQuery" icon="close" label="Clear changed file search" size="small" @click="clearChangedFileSearch" />
+            </div>
+            <select v-model="changedFileFilter" aria-label="Filter changed files by status">
+              <option value="all">All files</option>
+              <option value="new">New since review</option>
+              <option value="unviewed">Unviewed</option>
+              <option value="viewed">Viewed</option>
+              <option value="unresolved">Needs review</option>
+              <option value="local">Local edits</option>
+            </select>
             <GlButton
-              v-if="visibleChangedFiles.length < changedFiles.length"
+              v-if="overview.newChanges && changedFiles.length"
+              size="small"
+              icon="external-link"
+              title="Open the latest push in the native diff editor"
+              @click="openLatestChanges"
+            >Latest push</GlButton>
+            <span class="changed-file-result-count" aria-live="polite">
+              {{ filteredChangedFiles.length }} {{ filteredChangedFiles.length === 1 ? "file" : "files" }}
+            </span>
+          </div>
+          <GlEmptyState
+            v-if="!changedFiles.length"
+            title="No changed files"
+            icon="file"
+            compact
+          />
+          <GlEmptyState
+            v-else-if="!filteredChangedFiles.length"
+            title="No files match this filter"
+            description="Try a different path or status filter."
+            icon="search"
+            compact
+          />
+          <div v-else class="changed-scroll changed-tree-list" :class="{ scrollable: filteredChangedFiles.length > 4 }">
+            <TreeItem
+              v-for="node in changedFileTree"
+              :key="node.path"
+              :node="node"
+              kind="changed"
+              :active-file-path="model?.activeFilePath"
+              @open-changed="openChangedFile"
+              @open-branch="() => {}"
+            />
+            <GlButton
+              v-if="visibleChangedFiles.length < filteredChangedFiles.length"
               class="changed-load-more"
               size="small"
               @click="changedFileLimit += 200"
@@ -608,7 +826,19 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
-      <div v-if="changedFilesExpanded && changedFiles.length > 4" class="resizer" role="separator" aria-label="Changed filesの高さを変更" tabindex="0" @pointerdown="beginResize" />
+      <div
+        v-if="changedFilesExpanded && filteredChangedFiles.length > 4"
+        class="resizer"
+        role="separator"
+        aria-label="Resize changed files panel"
+        aria-orientation="horizontal"
+        aria-valuemin="110"
+        aria-valuemax="640"
+        :aria-valuenow="changedFilesHeight"
+        tabindex="0"
+        @pointerdown="beginResize"
+        @keydown="onResizerKeydown"
+      />
 
       <section class="commit-section collapsible-section">
         <button
@@ -622,17 +852,12 @@ onBeforeUnmount(() => {
           <GlIcon :name="commitsExpanded ? 'chevron-up' : 'chevron-down'" :size="14" />
         </button>
         <div v-if="commitsExpanded" id="commits-content" class="collapsible-section-content">
-          <div v-if="overview.commits.length" class="commit-timeline" aria-label="Commit filter">
-            <button type="button" :class="{ active: currentCommitId() === 'all' }" @click="selectCommit('all')">All</button>
-            <button
-              v-for="commit in overview.commits"
-              :key="commit.id"
-              type="button"
-              :class="{ active: currentCommitId() === commit.id }"
-              @click="selectCommit(commit.id)"
-            >
-              <span class="commit-dot" aria-hidden="true" /><code>{{ commit.shortId }}</code>
+          <div v-if="overview.commits.length" class="commit-filter-bar" aria-label="Commit filter">
+            <button type="button" :class="{ active: currentCommitId() === 'all' }" @click="selectCommit('all')">
+              <GlIcon name="file-tree" :size="13" />
+              <span>All changes</span>
             </button>
+            <span class="commit-filter-help">Select a commit to inspect its native diff</span>
           </div>
           <GlEmptyState v-if="!overview.commits.length" title="No commits" icon="commit" compact />
           <div v-else class="commit-list" :class="{ expanded: model?.commitDiff.phase !== 'hidden' }">
@@ -654,11 +879,11 @@ onBeforeUnmount(() => {
               <div v-if="currentCommitId() === commit.id && selectedCommitDiffMatches" class="commit-detail">
                 <header>
                   <span>{{ model?.commitDiff.phase === "ready" ? `${model.commitDiff.files.length} changed files` : commit.shortId }}</span>
-                  <GlIconButton v-if="commit.webUrl" icon="external-link" label="GitLabでcommitを開く" size="small" @click="post({ type: 'openCommit', commitId: commit.id })" />
+                  <GlIconButton v-if="commit.webUrl" icon="external-link" label="Open commit on GitLab" size="small" @click="post({ type: 'openCommit', commitId: commit.id })" />
                 </header>
-                <p v-if="model?.commitDiff.phase === 'loading'" class="state-message"><GlIcon name="spinner" class="spin" /> 差分を取得中</p>
+                <p v-if="model?.commitDiff.phase === 'loading'" class="state-message"><GlIcon name="spinner" class="spin" /> Loading diff…</p>
                 <p v-else-if="model?.commitDiff.phase === 'error'" class="state-message is-danger">{{ model.commitDiff.errorMessage }}</p>
-                <GlEmptyState v-else-if="!model?.commitDiff.files.length" title="変更ファイルはありません" icon="file" compact />
+                <GlEmptyState v-else-if="!model?.commitDiff.files.length" title="No changed files" icon="file" compact />
                 <div v-else class="commit-files">
                   <button
                     v-for="file in visibleCommitFiles"
@@ -687,23 +912,22 @@ onBeforeUnmount(() => {
         <template #icon><GlIcon name="comments" /></template>
         <template #actions>
           <span class="open-count">{{ overview.unresolvedThreads }} open</span>
-          <select :value="overview.threadSortOrder" aria-label="レビューの並び順" @change="setThreadSort">
+          <span class="thread-search-control">
+            <GlIconButton
+              :icon="threadSearchOpen ? 'close' : 'search'"
+              :label="threadSearchOpen ? 'Close review search' : 'Search review comments and files'"
+              size="small"
+              :aria-expanded="threadSearchOpen"
+              aria-controls="review-thread-search"
+              @click="toggleThreadSearch"
+            />
+          </span>
+          <select :value="overview.threadSortOrder" aria-label="Review thread order" @change="setThreadSort">
             <option value="open-first">Open first</option>
             <option value="oldest">Oldest</option>
             <option value="newest">Newest</option>
           </select>
         </template>
-
-        <div class="thread-search-toggle">
-          <GlIconButton
-            :icon="threadSearchOpen ? 'close' : 'search'"
-            :label="threadSearchOpen ? 'Close review search' : 'Search review comments'"
-            size="small"
-            :aria-expanded="threadSearchOpen"
-            aria-controls="review-thread-search"
-            @click="toggleThreadSearch"
-          />
-        </div>
 
         <div v-if="threadSearchOpen" id="review-thread-search" class="thread-search">
           <input
@@ -711,8 +935,8 @@ onBeforeUnmount(() => {
             v-model="threadSearchQuery"
             class="gl-input thread-search-input"
             type="search"
-            aria-label="Search review comment text and authors"
-            placeholder="Search comment text or authors…"
+            aria-label="Search review comments, authors, and files"
+            placeholder="Search comments, authors, or files…"
             @keydown.esc="closeThreadSearchFromKeyboard"
           />
           <GlButton
@@ -726,71 +950,6 @@ onBeforeUnmount(() => {
             {{ filteredThreads.length }} of {{ overview.threads.length }} threads
           </span>
         </div>
-
-        <div class="new-thread-composer">
-          <div class="new-thread-heading"><GlIcon name="comment" :size="12" /><span>New comment</span></div>
-          <div class="submission-mode-row">
-            <span class="submission-mode-label">Post as</span>
-            <div class="submission-mode" role="group" aria-label="Choose comment or review">
-              <button
-                type="button"
-                aria-label="Post as comment"
-                :aria-pressed="overviewThreadMode === 'comment'"
-                title="Post immediately as a comment"
-                @click="setOverviewThreadMode('comment')"
-              >Comment</button>
-              <button
-                type="button"
-                aria-label="Post as review"
-                :aria-pressed="overviewThreadMode === 'review'"
-                title="Keep pending until you submit the review"
-                @click="setOverviewThreadMode('review')"
-              >Review</button>
-            </div>
-            <span class="submission-mode-help">
-              {{ overviewThreadMode === "comment" ? "Posts immediately" : "Stays pending until review submission" }}
-            </span>
-          </div>
-          <GlCommentForm
-            v-model="overviewThreadDraft"
-            class="new-thread-form"
-            aria-label="Add review thread"
-            :placeholder="overviewThreadMode === 'comment' ? 'Add a comment…' : 'Add to your review…'"
-            :submit-label="overviewThreadMode === 'comment' ? 'Comment' : 'Add to review'"
-            compact
-            :project-id="commentProjectId"
-            @update:model-value="persist"
-            @submit="addOverviewThread"
-          />
-        </div>
-
-        <section v-if="overview.draftNotes.length" class="pending-review" aria-label="Pending review">
-          <header class="pending-review-header">
-            <span class="pending-review-title">
-              <GlBadge tone="warning" pill>Pending review</GlBadge>
-              <span>{{ overview.draftNotes.length }} comment{{ overview.draftNotes.length === 1 ? "" : "s" }}</span>
-            </span>
-            <GlButton
-              variant="confirm"
-              size="small"
-              :loading="reviewSubmissionPending"
-              @click="post({ type: 'submitReview' })"
-            >Submit review</GlButton>
-          </header>
-          <article v-for="draft in overview.draftNotes" :key="draft.id" class="pending-review-note">
-            <header>
-              <span class="pending-review-location">{{ draft.filePath ? `${draft.filePath}${draft.line ? `:${draft.line}` : ""}` : "MR overview" }}</span>
-              <GlButton
-                variant="link"
-                size="small"
-                :loading="draft.pending"
-                :disabled="reviewSubmissionPending && !draft.pending"
-                @click="post({ type: 'publishReviewDraft', draftId: draft.id })"
-              >Post as comment</GlButton>
-            </header>
-            <GlMarkdown :source="draft.body" :project-id="commentProjectId" />
-          </article>
-        </section>
 
         <div class="thread-list">
           <GlEmptyState
@@ -898,6 +1057,81 @@ onBeforeUnmount(() => {
             </div>
           </article>
         </div>
+
+        <section v-if="overview.draftNotes.length" class="pending-review" aria-label="Pending review">
+          <header class="pending-review-header">
+            <span class="pending-review-title">
+              <GlBadge tone="warning" pill>Pending review</GlBadge>
+              <span>{{ overview.draftNotes.length }} comment{{ overview.draftNotes.length === 1 ? "" : "s" }}</span>
+            </span>
+          </header>
+          <article v-for="draft in overview.draftNotes" :key="draft.id" class="pending-review-note">
+            <header>
+              <span class="pending-review-location">{{ draft.filePath ? `${draft.filePath}${draft.line ? `:${draft.line}` : ""}` : "MR overview" }}</span>
+              <GlButton
+                variant="link"
+                size="small"
+                :loading="draft.pending"
+                :disabled="reviewSubmissionPending && !draft.pending"
+                @click="post({ type: 'publishReviewDraft', draftId: draft.id })"
+              >Post as comment</GlButton>
+            </header>
+            <GlMarkdown :source="draft.body" :project-id="commentProjectId" />
+          </article>
+        </section>
+
+        <div class="new-thread-composer">
+          <div class="new-thread-heading"><GlIcon name="comment" :size="12" /><span>New comment</span></div>
+          <div class="submission-mode-row">
+            <span class="submission-mode-label">Post as</span>
+            <div class="submission-mode" role="group" aria-label="Choose comment or review">
+              <button
+                type="button"
+                aria-label="Post as comment"
+                :aria-pressed="overviewThreadMode === 'comment'"
+                title="Post immediately as a comment"
+                @click="setOverviewThreadMode('comment')"
+              >Comment</button>
+              <button
+                type="button"
+                aria-label="Post as review"
+                :aria-pressed="overviewThreadMode === 'review'"
+                title="Keep pending until you submit the review"
+                @click="setOverviewThreadMode('review')"
+              >Review</button>
+            </div>
+            <span class="submission-mode-help">
+              {{ overviewThreadMode === "comment" ? "Posts immediately" : "Stays pending until review submission" }}
+            </span>
+          </div>
+          <GlCommentForm
+            v-model="overviewThreadDraft"
+            class="new-thread-form"
+            aria-label="Add review thread"
+            :placeholder="overviewThreadMode === 'comment' ? 'Add a comment…' : 'Add to your review…'"
+            :submit-label="overviewThreadMode === 'comment' ? 'Comment' : 'Add to review'"
+            compact
+            :project-id="commentProjectId"
+            @update:model-value="persist"
+            @submit="addOverviewThread"
+          />
+        </div>
+
+        <section v-if="overview.draftNotes.length" class="review-submit-tray" aria-label="Review submission">
+          <div class="review-submit-tray-copy">
+            <GlBadge tone="warning" pill>{{ overview.draftNotes.length }} pending</GlBadge>
+            <span><strong>Review ready to submit</strong><small>Draft comments stay private until submitted.</small></span>
+          </div>
+          <div class="review-submit-tray-actions">
+            <GlButton v-if="reviewProgress.nextUnresolvedThread" size="small" variant="link" @click="openNextUnresolved">Next unresolved</GlButton>
+            <GlButton
+              variant="confirm"
+              size="small"
+              :loading="reviewSubmissionPending"
+              @click="post({ type: 'submitReview' })"
+            >Submit review</GlButton>
+          </div>
+        </section>
       </GlSection>
     </div>
   </main>
@@ -925,7 +1159,7 @@ onBeforeUnmount(() => {
   padding: var(--gl-spacing-4) var(--gl-spacing-8);
   border-bottom: 1px solid var(--gl-border-subtle);
   color: var(--gl-text-subtle);
-  font-size: 9px;
+  font-size: 11px;
 }
 .auth-identity, .top-toolbar { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); }
 .auth-identity > :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -939,14 +1173,27 @@ onBeforeUnmount(() => {
 .review-context-label { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); width: fit-content; color: var(--gl-thread-accent); font-size: 10px; font-weight: 600; letter-spacing: .02em; }
 .mr-title-row { min-width: 0; display: flex; align-items: flex-start; gap: var(--gl-spacing-8); }
 .mr-title-row h1 { min-width: 0; margin: 0; color: var(--gl-text-strong); font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
-.mr-meta { display: flex; gap: var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 10px; }
+.mr-meta { display: flex; gap: var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 11px; }
 .mr-meta strong { color: var(--gl-text-link); }
 .branch-flow { grid-column: 1 / -1; min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); }
 .branch-flow button { min-width: 0; max-width: calc(50% - var(--gl-spacing-12)); display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) var(--gl-spacing-4); border-radius: var(--gl-radius-sm); color: inherit; background: transparent; cursor: pointer; }
 .branch-flow button:hover { color: var(--gl-hover-text); background: var(--gl-hover-surface); }
-.branch-flow button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--vscode-editor-font-family); }
-.mr-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 10px; }
+.branch-flow button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--vscode-editor-font-family); }
+.mr-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 11px; }
 .mr-summary strong { color: var(--gl-text-strong); }
+.review-progress { grid-column: 1 / -1; display: grid; gap: var(--gl-spacing-6); padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-left: 2px solid var(--gl-feedback-brand); border-radius: var(--gl-radius-sm); background: color-mix(in srgb, var(--gl-feedback-brand) 5%, var(--gl-surface-raised)); }
+.review-progress-header, .review-progress-actions, .review-submit-tray, .review-submit-tray-copy, .review-submit-tray-actions { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-6); }
+.review-progress-header, .review-submit-tray { justify-content: space-between; }
+.review-progress-title { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-strong); font-size: 11px; font-weight: 600; }
+.review-progress-title .gl-icon { color: var(--gl-feedback-brand); }
+.review-progress-bar { height: 4px; overflow: hidden; border-radius: 999px; background: var(--gl-border-subtle); }
+.review-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--gl-feedback-brand); transition: width .16s ease; }
+.review-progress-metrics { display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 11px; }
+.review-progress-metrics strong { color: var(--gl-text-strong); }
+.new-since-review { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-4) var(--gl-spacing-6); border: 1px solid color-mix(in srgb, var(--gl-feedback-warning) 35%, var(--gl-border-default)); border-radius: var(--gl-radius-sm); color: var(--gl-feedback-warning); background: var(--gl-feedback-warning-subtle); }
+.new-since-review > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.new-since-review small { overflow: hidden; color: var(--gl-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
+.review-progress-actions { justify-content: flex-end; flex-wrap: wrap; }
 .local-workspace {
   min-width: 0;
   display: grid;
@@ -959,20 +1206,21 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--gl-accent-purple) 5%, var(--gl-surface-raised));
 }
 .local-workspace-row { min-width: 0; min-height: 24px; display: flex; align-items: center; gap: var(--gl-spacing-4); }
-.local-workspace-title { flex: none; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-accent-purple); font-size: 10px; }
-.local-current-branch { min-width: 52px; flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--gl-text-strong); font-size: 10px; white-space: nowrap; }
-.local-dirty { flex: none; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 9px; white-space: nowrap; }
+.local-workspace-title { flex: none; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-accent-purple); font-size: 11px; }
+.local-current-branch { min-width: 52px; flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--gl-text-strong); font-size: 11px; white-space: nowrap; }
+.local-dirty { flex: none; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 11px; white-space: nowrap; }
 .local-dirty.is-dirty { color: var(--gl-feedback-warning); }
 .local-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gl-feedback-success); }
 .is-dirty .local-status-dot { background: var(--gl-feedback-warning); }
 .local-primary-action { flex: none; }
-.local-state-message { display: flex; align-items: center; gap: var(--gl-spacing-4); margin: 0; color: var(--gl-text-subtle); font-size: 10px; }
+.local-state-message { display: flex; align-items: center; gap: var(--gl-spacing-4); margin: 0; color: var(--gl-text-subtle); font-size: 11px; }
 .local-state-message.is-danger { color: var(--gl-feedback-danger); }
-.local-help { margin: 0; color: var(--gl-text-subtle); font-size: 9px; line-height: 1.3; }
+.local-help { margin: 0; color: var(--gl-text-subtle); font-size: 11px; line-height: 1.3; }
 @media (max-width: 320px) {
   .local-workspace-row { flex-wrap: wrap; }
   .local-current-branch { order: 2; flex-basis: calc(100% - 64px); }
-  .local-dirty { display: none; }
+  .local-dirty { font-size: 10px; }
+  .review-progress-actions { justify-content: flex-start; }
 }
 .branch-explorer { max-height: 220px; padding: var(--gl-spacing-8); overflow: auto; border-left: 2px solid var(--gl-feedback-brand); background: var(--gl-surface-raised); }
 .tree { display: grid; gap: var(--gl-spacing-2); }
@@ -1016,6 +1264,12 @@ onBeforeUnmount(() => {
 .changed-section .collapsible-section-title > .gl-icon { color: var(--gl-changed-accent); }
 .changed-scroll { min-width: 0; min-height: 0; padding: var(--gl-spacing-4) 0 var(--gl-spacing-4) var(--gl-spacing-4); overflow: visible; }
 .changed-scroll.scrollable { max-height: var(--changed-height); overflow-x: hidden; overflow-y: auto; }
+.changed-file-tools { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--gl-spacing-4); align-items: center; padding: var(--gl-spacing-4); border-bottom: 1px solid var(--gl-border-subtle); background: var(--gl-surface-subtle); }
+.changed-file-search { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); padding-inline: var(--gl-spacing-4); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); background: var(--gl-surface-raised); }
+.changed-file-search > .gl-input { min-width: 0; flex: 1; height: 26px; padding: 0; border: 0; background: transparent; }
+.changed-file-search > .gl-input:focus { outline: none; }
+.changed-file-result-count { grid-column: 1 / -1; color: var(--gl-text-subtle); font-size: 11px; }
+.changed-tree-list { display: grid; align-content: start; gap: var(--gl-spacing-2); }
 .changed-flat-list { display: grid; align-content: start; gap: 1px; padding-inline: var(--gl-spacing-4); }
 .changed-flat-file {
   width: 100%;
@@ -1044,10 +1298,16 @@ onBeforeUnmount(() => {
 .diff-stats { display: flex; gap: var(--gl-spacing-8); font-size: 10px; }
 .resizer { height: 5px; margin-top: calc(var(--gl-spacing-12) * -1); cursor: row-resize; }
 .resizer::before { content: ""; display: block; width: 32px; height: 2px; margin: 3px auto; border-radius: var(--gl-radius-pill); background: var(--gl-border-strong); }
+.resizer:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .commit-timeline { display: flex; gap: var(--gl-spacing-4); overflow-x: auto; padding-bottom: var(--gl-spacing-4); }
 .commit-timeline button { min-height: 24px; display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) var(--gl-spacing-8); border-radius: var(--gl-radius-pill); color: var(--gl-text-subtle); background: transparent; cursor: pointer; }
 .commit-timeline button:hover { background: var(--gl-hover-surface); }
 .commit-timeline button.active { color: var(--gl-commit-accent); background: color-mix(in srgb, var(--gl-commit-accent) 14%, transparent); }
+.commit-filter-bar { display: flex; align-items: center; gap: var(--gl-spacing-8); padding: var(--gl-spacing-4) var(--gl-spacing-8); border-bottom: 1px solid var(--gl-border-subtle); background: var(--gl-surface-subtle); }
+.commit-filter-bar button { min-height: 26px; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); color: var(--gl-text-subtle); background: var(--gl-surface-raised); cursor: pointer; }
+.commit-filter-bar button:hover { color: var(--gl-text-default); background: var(--gl-hover-surface); }
+.commit-filter-bar button.active { color: var(--gl-commit-accent); border-color: color-mix(in srgb, var(--gl-commit-accent) 55%, var(--gl-border-default)); background: color-mix(in srgb, var(--gl-commit-accent) 12%, var(--gl-surface-raised)); }
+.commit-filter-help { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .commit-dot { width: 7px; height: 7px; flex: none; border: 2px solid currentColor; border-radius: 50%; color: var(--gl-commit-accent); }
 .commit-list { max-height: 168px; overflow: auto; border-top: 1px solid var(--gl-border-subtle); }
 .commit-list.expanded { max-height: 430px; }
@@ -1080,15 +1340,20 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .submission-mode button:last-child { border-right: 0; }
 .submission-mode button:hover { color: var(--gl-text-default); background: var(--gl-hover-surface); }
 .submission-mode button[aria-pressed="true"] { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, var(--gl-feedback-brand)); }
-.submission-mode-help { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.submission-mode-help { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .new-thread-form { border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); }
 .pending-review { min-width: 0; display: grid; gap: var(--gl-spacing-4); margin-bottom: var(--gl-spacing-8); padding: var(--gl-spacing-8); border: 1px solid color-mix(in srgb, var(--gl-feedback-warning) 40%, var(--gl-border-default)); border-radius: var(--gl-radius-md); background: var(--gl-feedback-warning-subtle); }
 .pending-review-header, .pending-review-note > header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--gl-spacing-8); }
-.pending-review-title { min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 10px; }
+.pending-review-title { min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 11px; }
 .pending-review-note { min-width: 0; padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-subtle); border-radius: var(--gl-radius-sm); background: var(--gl-surface-raised); }
-.pending-review-location { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font: 9px var(--vscode-editor-font-family); text-overflow: ellipsis; white-space: nowrap; }
+.pending-review-location { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font: 11px var(--vscode-editor-font-family); text-overflow: ellipsis; white-space: nowrap; }
 .pending-review-note :deep(.gl-markdown) { margin-top: var(--gl-spacing-4); }
 .pending-review :deep(.gl-button) { white-space: nowrap; }
+.review-submit-tray { position: sticky; bottom: 0; z-index: 4; margin: var(--gl-spacing-8) calc(-1 * var(--gl-spacing-8)) calc(-1 * var(--gl-spacing-8)); padding: var(--gl-spacing-8); border-top: 1px solid var(--gl-border-default); background: color-mix(in srgb, var(--vscode-sideBar-background) 94%, transparent); box-shadow: 0 -6px 16px color-mix(in srgb, var(--gl-surface-default) 18%, transparent); backdrop-filter: blur(5px); }
+.review-submit-tray-copy { min-width: 0; flex: 1; }
+.review-submit-tray-copy > span { min-width: 0; display: grid; gap: 1px; }
+.review-submit-tray-copy small { overflow: hidden; color: var(--gl-text-subtle); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.review-submit-tray-actions { flex: none; justify-content: flex-end; }
 .commit-section .collapsible-section-title > .gl-icon { color: var(--gl-commit-accent); }
 .thread-section :deep(.gl-section-title > .gl-icon) { color: var(--gl-thread-accent); }
 .thread {
@@ -1141,10 +1406,10 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .thread-heading { min-width: 0; flex: 1; display: grid; gap: 1px; overflow: hidden; }
 .thread-summary-line { min-width: 0; display: flex; align-items: baseline; gap: var(--gl-spacing-4); overflow: hidden; white-space: nowrap; }
 .reply-count-link { flex: none; color: var(--gl-text-link); font-size: 11px; text-decoration: underline; }
-.thread-last-reply { min-width: 0; color: var(--gl-text-subtle); font-size: 10px; }
+.thread-last-reply { min-width: 0; color: var(--gl-text-subtle); font-size: 11px; }
 .thread-last-reply b, .thread-expanded-title { color: var(--gl-text-strong); font-size: 11px; }
-.thread-location { color: var(--gl-text-subtle); font: 9px var(--vscode-editor-font-family); }
-.thread-search-excerpt { color: var(--gl-text-subtle); font-size: 10px; }
+.thread-location { color: var(--gl-text-subtle); font: 11px var(--vscode-editor-font-family); }
+.thread-search-excerpt { color: var(--gl-text-subtle); font-size: 11px; }
 .view-diff-action { min-height: 28px; white-space: nowrap; color: var(--gl-thread-accent); }
 .view-diff-action:hover:not(:disabled) { color: var(--gl-text-strong); background: color-mix(in srgb, var(--gl-thread-accent) 12%, transparent); }
 .comment-edit-action { color: var(--gl-text-subtle); }
@@ -1165,5 +1430,8 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
   .pending-review-header { flex-wrap: wrap; }
   .pending-review-title { flex-basis: 100%; justify-content: space-between; }
   .pending-review-header > :deep(.gl-button) { margin-left: auto; }
+  .review-submit-tray { align-items: flex-start; flex-wrap: wrap; }
+  .review-submit-tray-copy { flex-basis: 100%; }
+  .review-submit-tray-actions { margin-left: auto; }
 }
 </style>

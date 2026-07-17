@@ -66,6 +66,21 @@
 }
 
 body.vscode-dark {
+  --gl-accent-orange: #ff9f72;
+  --gl-accent-purple: #b9a7ff;
+  --gl-accent-blue: #8ab4ff;
+  --gl-accent-green: #7bd88f;
+  --gl-accent-cyan: #78d9df;
+  --gl-changed-accent: #ff9f72;
+  --gl-commit-accent: #b9a7ff;
+  --gl-thread-accent: #8ab4ff;
+  --gl-resolved-accent: #7bd88f;
+  --gl-local-accent: #78d9df;
+  --gl-feedback-success: #7bd88f;
+  --gl-feedback-danger: #ff7b72;
+  --gl-feedback-warning: #e5c07b;
+  --gl-feedback-brand: #a7c7ff;
+  --gl-feedback-info: #a7c7ff;
   --gl-surface-default: #1f1e24;
   --gl-surface-subtle: #25232b;
   --gl-surface-raised: #2c2933;
