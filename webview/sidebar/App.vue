@@ -23,8 +23,10 @@ import GlEmptyState from "../common/components/GlEmptyState.vue";
 import GlIcon from "../common/components/GlIcon.vue";
 import GlIconButton from "../common/components/GlIconButton.vue";
 import GlMarkdown from "../common/components/GlMarkdown.vue";
+import GlReactionBar from "../common/components/GlReactionBar.vue";
 import GlSection from "../common/components/GlSection.vue";
 import GlStatusBadge from "../common/components/GlStatusBadge.vue";
+import GlTechnicalIdentifier from "../common/components/GlTechnicalIdentifier.vue";
 import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
 import GlReviewerList from "../common/components/GlReviewerList.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
@@ -51,6 +53,7 @@ const saved = (vscode.getState() ?? {}) as UiState;
 const model = shallowRef<SidebarViewState>();
 const changedFilesHeight = ref(saved.changedFilesHeight ?? 210);
 const changedFilesExpanded = ref(saved.changedFilesExpanded ?? false);
+const changedFilesContentMounted = ref(changedFilesExpanded.value);
 const commitsExpanded = ref(saved.commitsExpanded ?? false);
 const myWorkScrollTop = ref(saved.myWorkScrollTop ?? 0);
 const commitSelection = ref(saved.commitSelection);
@@ -71,6 +74,7 @@ const requestedThreadDetails = new Set<string>();
 let loadedMrKey = "";
 let readyRetry: number | undefined;
 let pendingRevealThreadId: string | undefined;
+let overviewComposerRevealFrame: number | undefined;
 
 const overview = computed(() => model.value?.overview);
 const threadDetailsById = computed(() => new Map((model.value?.threadDetails ?? []).map((thread) => [thread.id, thread])));
@@ -169,12 +173,6 @@ const filteredThreads = computed(() => {
   if (!query) return threads;
   return threads.filter((thread) => thread.searchText.toLocaleLowerCase().includes(query));
 });
-const filteredCommits = computed(() => {
-  const commits = overview.value?.commits ?? [];
-  const selection = commitSelection.value;
-  if (!selection || selection.mrKey !== mrKey.value || selection.commitId === "all") return commits;
-  return commits.filter((commit) => commit.id === selection.commitId);
-});
 const selectedCommitId = computed(() => {
   const selection = commitSelection.value;
   return selection?.mrKey === mrKey.value ? selection.commitId : "all";
@@ -260,6 +258,7 @@ function persist(): void {
   });
 }
 function toggleChangedFiles(): void {
+  if (!changedFilesExpanded.value) changedFilesContentMounted.value = true;
   changedFilesExpanded.value = !changedFilesExpanded.value;
   persist();
 }
@@ -314,11 +313,39 @@ function addOverviewThread(): void {
   delete overviewThreadModes[mrKey.value];
   persist();
 }
+function scheduleOverviewComposerReveal(): void {
+  if (overviewComposerRevealFrame !== undefined) return;
+  overviewComposerRevealFrame = window.requestAnimationFrame(() => {
+    overviewComposerRevealFrame = undefined;
+    const form = document.querySelector<HTMLElement>(".new-thread-form");
+    const footer = form?.querySelector<HTMLElement>("footer");
+    const tray = document.querySelector<HTMLElement>(".review-submit-tray");
+    if (!footer || !tray) return;
+
+    const spacing = Number.parseFloat(getComputedStyle(tray).getPropertyValue("--gl-spacing-8"));
+    const footerBounds = footer.getBoundingClientRect();
+    const trayTop = tray.getBoundingClientRect().top;
+    const overlap = footerBounds.bottom - (trayTop - (Number.isFinite(spacing) ? spacing : 0));
+    if (overlap <= 0) return;
+
+    const scrollingElement = document.scrollingElement;
+    if (!scrollingElement) return;
+    const maxScrollTop = Math.max(0, scrollingElement.scrollHeight - scrollingElement.clientHeight);
+    const nextScrollTop = Math.min(scrollingElement.scrollTop + overlap, maxScrollTop);
+    if (nextScrollTop > scrollingElement.scrollTop) scrollingElement.scrollTop = nextScrollTop;
+  });
+}
+function updateOverviewThreadDraft(value: string): void {
+  overviewThreadDraft.value = value;
+  persist();
+  scheduleOverviewComposerReveal();
+}
 function setOverviewThreadMode(mode: ReviewSubmissionMode): void {
   if (!mrKey.value) return;
   overviewThreadModes[mrKey.value] = mode;
   persist();
   post({ type: "setSubmissionMode", mode });
+  scheduleOverviewComposerReveal();
 }
 function openThread(thread: ReviewThreadSummary): void {
   if (thread.filePath) post({ type: "openFile", filePath: thread.filePath, line: thread.line, threadId: thread.id });
@@ -343,6 +370,9 @@ function threadPanelId(thread: ReviewThreadSummary): string {
 function lastComment(thread: ReviewThreadSummary): ReviewThreadSummary["lastComment"] { return thread.lastComment; }
 function replyCount(thread: ReviewThreadSummary): number { return Math.max(0, thread.commentCount - 1); }
 function relativeReplyTime(thread: ReviewThreadSummary): string { return formatRelativeReplyTime(lastComment(thread)?.createdAt); }
+function threadLocation(thread: ReviewThreadSummary): string {
+  return thread.filePath ? `${thread.filePath}${thread.line ? `:${thread.line}` : ""}` : "MR overview";
+}
 function threadSearchExcerpt(thread: ReviewThreadSummary): string {
   const query = normalizedThreadSearchQuery.value;
   if (!query) return "";
@@ -568,6 +598,10 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   stopReadyRetry();
+  if (overviewComposerRevealFrame !== undefined) {
+    window.cancelAnimationFrame(overviewComposerRevealFrame);
+    overviewComposerRevealFrame = undefined;
+  }
   window.removeEventListener("message", receiveState);
 });
 </script>
@@ -586,9 +620,10 @@ onBeforeUnmount(() => {
     </div>
     <div v-else-if="model" class="auth-prompt">
       <GlIcon name="account" />
-      <span>{{ model.auth.phase === "checking" ? "Checking glab" : model.auth.phase === "signedOut" ? "Sign in to GitLab" : "glab unavailable" }}</span>
+      <span>{{ model.auth.phase === "checking" ? "Checking glab" : model.auth.phase === "signedOut" ? "Sign in to GitLab" : "glab unavailable. Check CLI setup, then retry." }}</span>
       <GlButton v-if="model.auth.phase === 'signedOut'" size="small" variant="confirm" @click="post({ type: 'login' })">Sign in</GlButton>
-      <GlIconButton icon="retry" label="Refresh GitLab login" size="small" @click="post({ type: 'refreshAuth' })" />
+      <GlButton v-else-if="model.auth.phase === 'unavailable'" icon="retry" size="small" @click="post({ type: 'refreshAuth' })">Retry</GlButton>
+      <GlIconButton v-else icon="retry" label="Refresh GitLab login" size="small" @click="post({ type: 'refreshAuth' })" />
     </div>
 
     <SidebarTabs
@@ -625,6 +660,14 @@ onBeforeUnmount(() => {
       class="review-loaded"
       :class="{ 'branch-open': model?.branchTree.phase !== 'hidden' }"
     >
+      <div v-if="overview.isRefreshing" class="review-status-banner" role="status">
+        <GlIcon name="spinner" class="spin" :size="13" />
+        <span>Refreshing merge request… Showing cached review until it finishes.</span>
+      </div>
+      <div v-else-if="overview.errorMessage" class="review-status-banner is-danger" role="alert">
+        <GlIcon name="warning" :size="13" />
+        <span>Refresh failed. Showing cached review. {{ overview.errorMessage }}</span>
+      </div>
       <header class="mr-header">
         <div class="mr-main">
           <span class="review-context-label"><GlIcon name="comments" :size="12" />Review · Remote</span>
@@ -642,12 +685,12 @@ onBeforeUnmount(() => {
         <div class="branch-flow" aria-label="Merge request branches">
           <button type="button" @click="post({ type: 'toggleBranchTree', branch: overview.sourceBranch })">
             <GlIcon name="branch" :size="14" />
-            <span>{{ overview.sourceBranch }}</span>
+            <GlTechnicalIdentifier :value="overview.sourceBranch" :tail-length="29" />
           </button>
           <GlIcon name="arrow-right" :size="14" />
           <button type="button" @click="post({ type: 'toggleBranchTree', branch: overview.targetBranch })">
             <GlIcon name="branch" :size="14" />
-            <span>{{ overview.targetBranch }}</span>
+            <GlTechnicalIdentifier :value="overview.targetBranch" :tail-length="29" />
           </button>
         </div>
 
@@ -677,26 +720,26 @@ onBeforeUnmount(() => {
             <span><strong>{{ reviewProgress.viewedFiles }}/{{ reviewProgress.totalFiles }}</strong> files viewed</span>
             <span><strong>{{ reviewProgress.resolvedDiscussions }}/{{ reviewProgress.totalDiscussions }}</strong> discussions resolved</span>
           </div>
-          <div v-if="reviewProgress.newSinceLastReview" class="new-since-review" role="status">
-            <GlIcon name="notifications" :size="12" />
-            <span><strong>New since last review</strong><small>{{ reviewProgress.newCommitCount }} commit{{ reviewProgress.newCommitCount === 1 ? '' : 's' }}</small></span>
-            <GlButton size="small" variant="link" @click="openLatestChanges">Review new changes</GlButton>
-          </div>
-          <div class="review-progress-actions">
+          <div v-if="reviewProgress.nextUnresolvedThread || canMarkReviewComplete" class="review-progress-actions">
             <GlButton
               v-if="reviewProgress.nextUnresolvedThread"
+              class="review-progress-next-action"
               size="small"
-              variant="link"
               icon="warning"
               @click="openNextUnresolved"
             >Next unresolved</GlButton>
             <GlButton
-              v-if="canMarkReviewComplete"
+              v-else-if="canMarkReviewComplete"
               size="small"
               variant="confirm"
               icon="check"
               @click="markReviewComplete"
             >Mark review complete</GlButton>
+          </div>
+          <div v-if="reviewProgress.newSinceLastReview" class="new-since-review" role="status">
+            <GlIcon name="notifications" :size="12" />
+            <span><strong>New since last review</strong><small>{{ reviewProgress.newCommitCount }} commit{{ reviewProgress.newCommitCount === 1 ? '' : 's' }}</small></span>
+            <GlButton size="small" variant="link" @click="openLatestChanges">Review new changes</GlButton>
           </div>
         </section>
       </header>
@@ -760,85 +803,95 @@ onBeforeUnmount(() => {
             <GlIcon :name="changedFilesExpanded ? 'chevron-up' : 'chevron-down'" :size="14" />
           </span>
         </button>
-        <div v-if="changedFilesExpanded" id="changed-files-content" class="collapsible-section-content">
-          <div v-if="changedFiles.length" class="changed-file-tools" role="search" aria-label="Changed file filters">
-            <div class="changed-file-search">
-              <GlIcon name="search" :size="13" aria-hidden="true" />
-              <input
-                ref="changedFileSearchInput"
-                v-model="changedFileQuery"
-                class="gl-input"
-                type="search"
-                aria-label="Search changed files"
-                placeholder="Filter files…"
-                @keydown.esc="changedFileQuery = ''"
-              >
-              <GlIconButton v-if="changedFileQuery" icon="close" label="Clear changed file search" size="small" @click="clearChangedFileSearch" />
+        <Transition name="gl-collapse">
+          <div
+            v-if="changedFilesContentMounted"
+            v-show="changedFilesExpanded"
+            :key="mrKey"
+            class="gl-collapse-shell"
+          >
+            <div id="changed-files-content" class="collapsible-section-content gl-collapse-content">
+              <div v-if="changedFiles.length" class="changed-file-tools" role="search" aria-label="Changed file filters">
+                <div class="changed-file-search">
+                  <GlIcon name="search" :size="13" aria-hidden="true" />
+                  <input
+                    ref="changedFileSearchInput"
+                    v-model="changedFileQuery"
+                    class="gl-input"
+                    type="search"
+                    aria-label="Search changed files"
+                    placeholder="Filter files…"
+                    @keydown.esc="changedFileQuery = ''"
+                  >
+                  <GlIconButton v-if="changedFileQuery" icon="close" label="Clear changed file search" size="small" @click="clearChangedFileSearch" />
+                </div>
+                <select v-model="changedFileFilter" aria-label="Filter changed files by status">
+                  <option value="all">All files</option>
+                  <option value="new">New since review</option>
+                  <option value="unviewed">Unviewed</option>
+                  <option value="viewed">Viewed</option>
+                  <option value="unresolved">Needs review</option>
+                  <option value="local">Local edits</option>
+                </select>
+                <GlButton
+                  v-if="overview.newChanges && changedFiles.length"
+                  size="small"
+                  icon="external-link"
+                  title="Open the latest push in the native diff editor"
+                  @click="openLatestChanges"
+                >Latest push</GlButton>
+                <span class="changed-file-result-count" aria-live="polite">
+                  <span>{{ filteredChangedFiles.length }} {{ filteredChangedFiles.length === 1 ? "file" : "files" }}</span>
+                  <span class="changed-file-result-help">Select a file to open its diff</span>
+                </span>
+              </div>
+              <GlEmptyState
+                v-if="!changedFiles.length"
+                title="No changed files"
+                icon="file"
+                compact
+              />
+              <GlEmptyState
+                v-else-if="!filteredChangedFiles.length"
+                title="No files match this filter"
+                description="Try a different path or status filter."
+                icon="search"
+                compact
+              />
+              <div v-else class="changed-scroll changed-tree-list" :class="{ scrollable: filteredChangedFiles.length > 4 }">
+                <TreeItem
+                  v-for="node in changedFileTree"
+                  :key="node.path"
+                  :node="node"
+                  kind="changed"
+                  :active-file-path="model?.activeFilePath"
+                  @open-changed="openChangedFile"
+                  @open-branch="() => {}"
+                />
+                <GlButton
+                  v-if="visibleChangedFiles.length < filteredChangedFiles.length"
+                  class="changed-load-more"
+                  size="small"
+                  @click="changedFileLimit += 200"
+                >Show 200 more</GlButton>
+              </div>
+              <div
+                v-if="filteredChangedFiles.length > 4"
+                class="resizer"
+                role="separator"
+                aria-label="Resize changed files panel"
+                aria-orientation="horizontal"
+                aria-valuemin="110"
+                aria-valuemax="640"
+                :aria-valuenow="changedFilesHeight"
+                tabindex="0"
+                @pointerdown="beginResize"
+                @keydown="onResizerKeydown"
+              />
             </div>
-            <select v-model="changedFileFilter" aria-label="Filter changed files by status">
-              <option value="all">All files</option>
-              <option value="new">New since review</option>
-              <option value="unviewed">Unviewed</option>
-              <option value="viewed">Viewed</option>
-              <option value="unresolved">Needs review</option>
-              <option value="local">Local edits</option>
-            </select>
-            <GlButton
-              v-if="overview.newChanges && changedFiles.length"
-              size="small"
-              icon="external-link"
-              title="Open the latest push in the native diff editor"
-              @click="openLatestChanges"
-            >Latest push</GlButton>
-            <span class="changed-file-result-count" aria-live="polite">
-              {{ filteredChangedFiles.length }} {{ filteredChangedFiles.length === 1 ? "file" : "files" }}
-            </span>
           </div>
-          <GlEmptyState
-            v-if="!changedFiles.length"
-            title="No changed files"
-            icon="file"
-            compact
-          />
-          <GlEmptyState
-            v-else-if="!filteredChangedFiles.length"
-            title="No files match this filter"
-            description="Try a different path or status filter."
-            icon="search"
-            compact
-          />
-          <div v-else class="changed-scroll changed-tree-list" :class="{ scrollable: filteredChangedFiles.length > 4 }">
-            <TreeItem
-              v-for="node in changedFileTree"
-              :key="node.path"
-              :node="node"
-              kind="changed"
-              :active-file-path="model?.activeFilePath"
-              @open-changed="openChangedFile"
-              @open-branch="() => {}"
-            />
-            <GlButton
-              v-if="visibleChangedFiles.length < filteredChangedFiles.length"
-              class="changed-load-more"
-              size="small"
-              @click="changedFileLimit += 200"
-            >Show 200 more</GlButton>
-          </div>
-        </div>
+        </Transition>
       </section>
-      <div
-        v-if="changedFilesExpanded && filteredChangedFiles.length > 4"
-        class="resizer"
-        role="separator"
-        aria-label="Resize changed files panel"
-        aria-orientation="horizontal"
-        aria-valuemin="110"
-        aria-valuemax="640"
-        :aria-valuenow="changedFilesHeight"
-        tabindex="0"
-        @pointerdown="beginResize"
-        @keydown="onResizerKeydown"
-      />
 
       <section class="commit-section collapsible-section">
         <button
@@ -851,61 +904,74 @@ onBeforeUnmount(() => {
           <span class="collapsible-section-title"><GlIcon name="commit" /><strong>Commits</strong><span class="collapsible-section-count">{{ overview.commits.length }}</span></span>
           <GlIcon :name="commitsExpanded ? 'chevron-up' : 'chevron-down'" :size="14" />
         </button>
-        <div v-if="commitsExpanded" id="commits-content" class="collapsible-section-content">
-          <div v-if="overview.commits.length" class="commit-filter-bar" aria-label="Commit filter">
-            <button type="button" :class="{ active: currentCommitId() === 'all' }" @click="selectCommit('all')">
-              <GlIcon name="file-tree" :size="13" />
-              <span>All changes</span>
-            </button>
-            <span class="commit-filter-help">Select a commit to inspect its native diff</span>
-          </div>
-          <GlEmptyState v-if="!overview.commits.length" title="No commits" icon="commit" compact />
-          <div v-else class="commit-list" :class="{ expanded: model?.commitDiff.phase !== 'hidden' }">
-            <article v-for="commit in filteredCommits" :key="commit.id" class="commit-item">
-              <button
-                class="commit-row"
-                type="button"
-                :class="{ active: currentCommitId() === commit.id }"
-                :aria-expanded="currentCommitId() === commit.id && selectedCommitDiffMatches"
-                @click="selectCommit(commit.id)"
-              >
-                <span class="commit-dot" aria-hidden="true" />
-                <code>{{ commit.shortId }}</code>
-                <span class="gl-truncate">{{ commit.title }}</span>
-                <span class="commit-author gl-truncate">{{ commit.authorName }}</span>
-                <time>{{ formatDate(commit.committedAt) }}</time>
-                <GlIcon :name="currentCommitId() === commit.id && selectedCommitDiffMatches ? 'chevron-up' : 'chevron-down'" :size="14" />
-              </button>
-              <div v-if="currentCommitId() === commit.id && selectedCommitDiffMatches" class="commit-detail">
-                <header>
-                  <span>{{ model?.commitDiff.phase === "ready" ? `${model.commitDiff.files.length} changed files` : commit.shortId }}</span>
-                  <GlIconButton v-if="commit.webUrl" icon="external-link" label="Open commit on GitLab" size="small" @click="post({ type: 'openCommit', commitId: commit.id })" />
-                </header>
-                <p v-if="model?.commitDiff.phase === 'loading'" class="state-message"><GlIcon name="spinner" class="spin" /> Loading diff…</p>
-                <p v-else-if="model?.commitDiff.phase === 'error'" class="state-message is-danger">{{ model.commitDiff.errorMessage }}</p>
-                <GlEmptyState v-else-if="!model?.commitDiff.files.length" title="No changed files" icon="file" compact />
-                <div v-else class="commit-files">
-                  <button
-                    v-for="file in visibleCommitFiles"
-                    :key="file.path"
-                    type="button"
-                    :disabled="file.collapsed || file.tooLarge"
-                    @click="post({ type: 'openCommitFile', commitId: commit.id, filePath: file.path })"
-                  >
-                    <GlStatusBadge :status="file.status" />
-                    <span class="gl-truncate">{{ file.renamedFile && file.oldPath !== file.newPath ? `${file.oldPath} → ${file.newPath}` : file.path }}</span>
-                    <small v-if="file.collapsed || file.tooLarge">{{ file.tooLarge ? "too large" : "collapsed" }}</small>
-                  </button>
-                  <GlButton
-                    v-if="visibleCommitFiles.length < (model?.commitDiff.files.length ?? 0)"
-                    size="small"
-                    @click="commitFileLimit += 200"
-                  >Show 200 more</GlButton>
-                </div>
+        <Transition name="gl-collapse">
+          <div v-if="commitsExpanded" class="gl-collapse-shell">
+            <div id="commits-content" class="collapsible-section-content gl-collapse-content">
+              <div v-if="overview.commits.length" class="commit-filter-bar" aria-label="Commit filter">
+                <button type="button" :class="{ active: currentCommitId() === 'all' }" :aria-pressed="currentCommitId() === 'all'" @click="selectCommit('all')">
+                  <GlIcon name="file-tree" :size="13" />
+                  <span>All changes</span>
+                </button>
+                <span class="commit-filter-help">Select a commit to inspect its native diff</span>
               </div>
-            </article>
+              <GlEmptyState v-if="!overview.commits.length" title="No commits" icon="commit" compact />
+              <div v-else class="commit-list" :class="{ expanded: model?.commitDiff.phase !== 'hidden' }">
+                <article v-for="commit in overview.commits" :key="commit.id" class="commit-item">
+                  <button
+                    class="commit-row"
+                    type="button"
+                    :class="{ active: currentCommitId() === commit.id }"
+                    :aria-pressed="currentCommitId() === commit.id"
+                    :aria-expanded="currentCommitId() === commit.id && selectedCommitDiffMatches"
+                    :aria-label="`${currentCommitId() === commit.id && selectedCommitDiffMatches ? 'Hide changes for' : 'Show changes for'} commit ${commit.shortId}: ${commit.title}`"
+                    @click="selectCommit(commit.id)"
+                  >
+                    <span class="commit-dot" aria-hidden="true" />
+                    <code>{{ commit.shortId }}</code>
+                    <span class="gl-truncate">{{ commit.title }}</span>
+                    <span class="commit-author gl-truncate">{{ commit.authorName }}</span>
+                    <time>{{ formatDate(commit.committedAt) }}</time>
+                    <span class="commit-row-action" aria-hidden="true">
+                      <span class="commit-row-action-label">{{ currentCommitId() === commit.id && selectedCommitDiffMatches ? "Hide changes" : "Show changes" }}</span>
+                      <GlIcon :name="currentCommitId() === commit.id && selectedCommitDiffMatches ? 'chevron-up' : 'chevron-down'" :size="14" />
+                    </span>
+                  </button>
+                  <Transition name="gl-collapse">
+                    <div v-if="currentCommitId() === commit.id && selectedCommitDiffMatches" class="commit-detail-shell gl-collapse-shell">
+                      <div class="commit-detail gl-collapse-content">
+                        <header>
+                          <span>{{ model?.commitDiff.phase === "ready" ? `${model.commitDiff.files.length} changed files` : commit.shortId }}</span>
+                          <GlIconButton v-if="commit.webUrl" icon="external-link" label="Open commit on GitLab" size="small" @click="post({ type: 'openCommit', commitId: commit.id })" />
+                        </header>
+                        <p v-if="model?.commitDiff.phase === 'loading'" class="state-message"><GlIcon name="spinner" class="spin" /> Loading diff…</p>
+                        <p v-else-if="model?.commitDiff.phase === 'error'" class="state-message is-danger">{{ model.commitDiff.errorMessage }}</p>
+                        <GlEmptyState v-else-if="!model?.commitDiff.files.length" title="No changed files" icon="file" compact />
+                        <div v-else class="commit-files">
+                          <button
+                            v-for="file in visibleCommitFiles"
+                            :key="file.path"
+                            type="button"
+                            :disabled="file.collapsed || file.tooLarge"
+                            @click="post({ type: 'openCommitFile', commitId: commit.id, filePath: file.path })"
+                          >
+                            <GlStatusBadge :status="file.status" />
+                            <span class="gl-truncate">{{ file.renamedFile && file.oldPath !== file.newPath ? `${file.oldPath} → ${file.newPath}` : file.path }}</span>
+                            <small v-if="file.collapsed || file.tooLarge">{{ file.tooLarge ? "too large" : "collapsed" }}</small>
+                          </button>
+                          <GlButton
+                            v-if="visibleCommitFiles.length < (model?.commitDiff.files.length ?? 0)"
+                            size="small"
+                            @click="commitFileLimit += 200"
+                          >Show 200 more</GlButton>
+                        </div>
+                      </div>
+                    </div>
+                  </Transition>
+                </article>
+              </div>
+            </div>
           </div>
-        </div>
+        </Transition>
       </section>
 
       <GlSection class="thread-section" title="Review threads" :count="overview.threads.length" flush>
@@ -972,7 +1038,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-expanded="!isThreadCollapsed(thread)"
                 :aria-controls="threadPanelId(thread)"
-                :aria-label="`${isThreadCollapsed(thread) ? 'Expand' : 'Collapse'} discussion at ${thread.filePath || 'MR overview'}`"
+                :aria-label="`${isThreadCollapsed(thread) ? 'Expand' : 'Collapse'} discussion at ${threadLocation(thread)}`"
                 @click="toggleThread(thread)"
               >
                 <GlIcon name="chevron-right" :size="12" />
@@ -987,10 +1053,14 @@ onBeforeUnmount(() => {
                     <span class="thread-last-reply gl-truncate">Last reply by <b>{{ lastComment(thread)?.author || "GitLab user" }}</b> {{ relativeReplyTime(thread) }}</span>
                   </span>
                   <template v-else>
-                    <strong class="thread-expanded-title gl-truncate">{{ thread.filePath ? `${thread.filePath}${thread.line ? `:${thread.line}` : ""}` : "MR overview" }}</strong>
+                    <strong class="thread-expanded-title">
+                      <GlTechnicalIdentifier :value="threadLocation(thread)" :tail-length="26" />
+                    </strong>
                     <span class="thread-last-reply">{{ thread.commentCount }} comments</span>
                   </template>
-                  <span v-if="isThreadCollapsed(thread)" class="thread-location gl-truncate">{{ thread.filePath ? `${thread.filePath}${thread.line ? `:${thread.line}` : ""}` : "MR overview" }}</span>
+                  <span v-if="isThreadCollapsed(thread)" class="thread-location">
+                    <GlTechnicalIdentifier :value="threadLocation(thread)" :tail-length="26" />
+                  </span>
                   <span v-if="threadSearchExcerpt(thread)" class="thread-search-excerpt gl-truncate">{{ threadSearchExcerpt(thread) }}</span>
                 </span>
               </button>
@@ -1013,48 +1083,63 @@ onBeforeUnmount(() => {
               </span>
             </header>
 
-            <div v-if="!isThreadCollapsed(thread)" :id="threadPanelId(thread)" class="thread-content">
-              <p v-if="!threadDetailsById.get(thread.id)" class="thread-detail-loading"><GlIcon name="spinner" class="spin" :size="12" /> Loading discussion…</p>
-              <template v-for="comment in threadDetailsById.get(thread.id)?.comments ?? []" :key="comment.id">
-                <GlComment
-                  v-if="!isEditing(thread.id, comment.id)"
-                  :author="comment.author"
-                  :avatar-url="comment.avatarUrl"
-                  :date="formatDate(comment.createdAt)"
-                  :edited="isCommentEdited(comment)"
-                  :pending="comment.pending"
-                >
-                  <template #meta><span v-if="comment.pending">{{ comment.id.includes("-pending-") ? "sending" : "saving" }}</span></template>
-                  <template #actions>
-                    <GlButton v-if="comment.canEdit && !comment.pending" class="comment-edit-action" variant="link" size="small" icon="pencil" @click.stop="startEdit(thread.id, comment)">Edit</GlButton>
+            <Transition name="gl-collapse">
+              <div v-if="!isThreadCollapsed(thread)" class="gl-collapse-shell">
+                <div :id="threadPanelId(thread)" class="thread-content gl-collapse-content">
+                  <p v-if="!threadDetailsById.get(thread.id)" class="thread-detail-loading"><GlIcon name="spinner" class="spin" :size="12" /> Loading discussion…</p>
+                  <template v-for="comment in threadDetailsById.get(thread.id)?.comments ?? []" :key="comment.id">
+                    <GlComment
+                      v-if="!isEditing(thread.id, comment.id)"
+                      :author="comment.author"
+                      :avatar-url="comment.avatarUrl"
+                      :date="formatDate(comment.createdAt)"
+                      :edited="isCommentEdited(comment)"
+                      :pending="comment.pending"
+                    >
+                      <template #meta><span v-if="comment.pending">{{ comment.id.includes("-pending-") ? "sending" : "saving" }}</span></template>
+                      <template #actions>
+                        <GlButton v-if="comment.canEdit && !comment.pending" class="comment-edit-action" variant="link" size="small" icon="pencil" @click.stop="startEdit(thread.id, comment)">Edit</GlButton>
+                      </template>
+                      <GlMarkdown :source="comment.body" :project-id="commentProjectId" />
+                      <template #footer>
+                        <GlReactionBar
+                          :reactions="comment.reactions"
+                          :loaded="comment.reactionsLoaded"
+                          :loading="comment.reactionsLoading"
+                          :error="comment.reactionError"
+                          :disabled="comment.pending"
+                          @load="post({ type: 'loadCommentReactions', threadId: thread.id, commentId: comment.id })"
+                          @toggle="name => post({ type: 'toggleCommentReaction', threadId: thread.id, commentId: comment.id, name })"
+                        />
+                      </template>
+                    </GlComment>
+                    <GlCommentForm
+                      v-else
+                      v-model="editDrafts[commentKey(thread.id, comment.id)]"
+                      aria-label="Edit comment"
+                      submit-label="Save"
+                      cancel-label="Cancel"
+                      compact
+                      :project-id="commentProjectId"
+                      @update:model-value="persist"
+                      @submit="saveEdit(thread.id, comment.id)"
+                      @cancel="cancelEdit(thread.id, comment.id)"
+                    />
                   </template>
-                  <GlMarkdown :source="comment.body" :project-id="commentProjectId" />
-                </GlComment>
-                <GlCommentForm
-                  v-else
-                  v-model="editDrafts[commentKey(thread.id, comment.id)]"
-                  aria-label="Edit comment"
-                  submit-label="Save"
-                  cancel-label="Cancel"
-                  compact
-                  :project-id="commentProjectId"
-                  @update:model-value="persist"
-                  @submit="saveEdit(thread.id, comment.id)"
-                  @cancel="cancelEdit(thread.id, comment.id)"
-                />
-              </template>
-              <GlCommentForm
-                v-if="!thread.pending"
-                :model-value="replyDrafts[thread.id] ?? ''"
-                aria-label="Reply to thread"
-                placeholder="Reply…"
-                submit-label="Reply"
-                compact
-                :project-id="commentProjectId"
-                @update:model-value="value => { replyDrafts[thread.id] = value; persist(); }"
-                @submit="sendReply(thread.id)"
-              />
-            </div>
+                  <GlCommentForm
+                    v-if="!thread.pending"
+                    :model-value="replyDrafts[thread.id] ?? ''"
+                    aria-label="Reply to thread"
+                    placeholder="Reply…"
+                    submit-label="Reply"
+                    compact
+                    :project-id="commentProjectId"
+                    @update:model-value="value => { replyDrafts[thread.id] = value; persist(); }"
+                    @submit="sendReply(thread.id)"
+                  />
+                </div>
+              </div>
+            </Transition>
           </article>
         </div>
 
@@ -1080,7 +1165,7 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
-        <div class="new-thread-composer">
+        <div class="new-thread-composer" :class="{ 'has-submission-tray': overview.draftNotes.length > 0 }">
           <div class="new-thread-heading"><GlIcon name="comment" :size="12" /><span>New comment</span></div>
           <div class="submission-mode-row">
             <span class="submission-mode-label">Post as</span>
@@ -1112,7 +1197,8 @@ onBeforeUnmount(() => {
             :submit-label="overviewThreadMode === 'comment' ? 'Comment' : 'Add to review'"
             compact
             :project-id="commentProjectId"
-            @update:model-value="persist"
+            @focusin="scheduleOverviewComposerReveal"
+            @update:model-value="updateOverviewThreadDraft"
             @submit="addOverviewThread"
           />
         </div>
@@ -1168,6 +1254,30 @@ onBeforeUnmount(() => {
 .auth-prompt { display: flex; align-items: center; gap: var(--gl-spacing-8); padding: var(--gl-spacing-8); color: var(--gl-text-subtle); background: var(--gl-surface-raised); }
 .auth-prompt > span { flex: 1; }
 .review-loaded { width: 100%; min-width: 0; max-width: 100%; display: grid; align-content: start; gap: var(--gl-spacing-12); }
+.review-status-banner {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gl-spacing-6);
+  margin: 0 var(--gl-spacing-8);
+  padding: var(--gl-spacing-6) var(--gl-spacing-8);
+  border: 1px solid color-mix(in srgb, var(--gl-feedback-brand) 34%, var(--gl-border-default));
+  border-left: 2px solid var(--gl-feedback-brand);
+  border-radius: var(--gl-radius-sm);
+  color: var(--gl-text-subtle);
+  background: color-mix(in srgb, var(--gl-feedback-brand) 6%, var(--gl-surface-raised));
+  font-size: 11px;
+  line-height: 1.35;
+}
+.review-status-banner > span { min-width: 0; flex: 1; }
+.review-status-banner > .gl-icon { flex: none; color: var(--gl-feedback-brand); }
+.review-status-banner.is-danger {
+  border-color: color-mix(in srgb, var(--gl-feedback-danger) 40%, var(--gl-border-default));
+  border-left-color: var(--gl-feedback-danger);
+  color: var(--gl-text-default);
+  background: color-mix(in srgb, var(--gl-feedback-danger) 7%, var(--gl-surface-raised));
+}
+.review-status-banner.is-danger > .gl-icon { color: var(--gl-feedback-danger); }
 .mr-header { display: grid; gap: var(--gl-spacing-8); padding: var(--gl-spacing-8) var(--gl-spacing-8) var(--gl-spacing-12); border-top: 2px solid var(--gl-accent-orange); border-bottom: 1px solid var(--gl-border-default); background: color-mix(in srgb, var(--gl-accent-orange) 4%, var(--gl-surface-default)); }
 .mr-main { min-width: 0; display: grid; gap: var(--gl-spacing-4); }
 .review-context-label { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); width: fit-content; color: var(--gl-thread-accent); font-size: 10px; font-weight: 600; letter-spacing: .02em; }
@@ -1176,9 +1286,9 @@ onBeforeUnmount(() => {
 .mr-meta { display: flex; gap: var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 11px; }
 .mr-meta strong { color: var(--gl-text-link); }
 .branch-flow { grid-column: 1 / -1; min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); }
-.branch-flow button { min-width: 0; max-width: calc(50% - var(--gl-spacing-12)); display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) var(--gl-spacing-4); border-radius: var(--gl-radius-sm); color: inherit; background: transparent; cursor: pointer; }
+.branch-flow button { min-width: 0; max-width: calc(50% - var(--gl-spacing-12)); display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) var(--gl-spacing-4); border-radius: var(--gl-radius-sm); color: inherit; background: transparent; font: 11px var(--vscode-editor-font-family); cursor: pointer; }
 .branch-flow button:hover { color: var(--gl-hover-text); background: var(--gl-hover-surface); }
-.branch-flow button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--vscode-editor-font-family); }
+.branch-flow button :deep(.gl-technical-identifier) { flex: 1; }
 .mr-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 11px; }
 .mr-summary strong { color: var(--gl-text-strong); }
 .review-progress { grid-column: 1 / -1; display: grid; gap: var(--gl-spacing-6); padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-left: 2px solid var(--gl-feedback-brand); border-radius: var(--gl-radius-sm); background: color-mix(in srgb, var(--gl-feedback-brand) 5%, var(--gl-surface-raised)); }
@@ -1187,13 +1297,14 @@ onBeforeUnmount(() => {
 .review-progress-title { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-strong); font-size: 11px; font-weight: 600; }
 .review-progress-title .gl-icon { color: var(--gl-feedback-brand); }
 .review-progress-bar { height: 4px; overflow: hidden; border-radius: 999px; background: var(--gl-border-subtle); }
-.review-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--gl-feedback-brand); transition: width .16s ease; }
+.review-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--gl-feedback-brand); transition: width var(--gl-motion-duration-standard) var(--gl-motion-ease-standard); }
 .review-progress-metrics { display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 11px; }
 .review-progress-metrics strong { color: var(--gl-text-strong); }
-.new-since-review { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-4) var(--gl-spacing-6); border: 1px solid color-mix(in srgb, var(--gl-feedback-warning) 35%, var(--gl-border-default)); border-radius: var(--gl-radius-sm); color: var(--gl-feedback-warning); background: var(--gl-feedback-warning-subtle); }
+.new-since-review { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) 0 var(--gl-spacing-2) var(--gl-spacing-6); border-left: 2px solid var(--gl-feedback-warning); color: var(--gl-feedback-warning); }
 .new-since-review > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
 .new-since-review small { overflow: hidden; color: var(--gl-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
-.review-progress-actions { justify-content: flex-end; flex-wrap: wrap; }
+.review-progress-actions { justify-content: flex-start; flex-wrap: wrap; }
+.review-progress-next-action { border-color: color-mix(in srgb, var(--gl-feedback-brand) 55%, var(--gl-border-default)); }
 .local-workspace {
   min-width: 0;
   display: grid;
@@ -1230,13 +1341,14 @@ onBeforeUnmount(() => {
 .collapsible-section-header {
   width: 100%;
   min-width: 0;
-  min-height: 32px;
+  min-height: 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--gl-spacing-8);
   padding: 0 var(--gl-spacing-8);
   border: 0;
+  border-bottom: 1px solid var(--gl-border-subtle);
   color: var(--gl-text-default);
   background: transparent;
   text-align: left;
@@ -1250,17 +1362,13 @@ onBeforeUnmount(() => {
 .collapsible-section-content { min-width: 0; min-height: 0; }
 .changed-section {
   min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--gl-border-default);
-  border-left: 2px solid var(--gl-changed-accent);
-  border-radius: var(--gl-radius-md);
-  background: var(--gl-surface-raised);
+  overflow: visible;
+  border: 0;
+  background: transparent;
 }
 .changed-section > .collapsible-section-header {
-  border-bottom: 1px solid var(--gl-border-default);
-  background: color-mix(in srgb, var(--gl-changed-accent) 8%, var(--gl-surface-subtle));
+  background: transparent;
 }
-.changed-section > .collapsible-section-header[aria-expanded="false"] { border-bottom: 0; }
 .changed-section .collapsible-section-title > .gl-icon { color: var(--gl-changed-accent); }
 .changed-scroll { min-width: 0; min-height: 0; padding: var(--gl-spacing-4) 0 var(--gl-spacing-4) var(--gl-spacing-4); overflow: visible; }
 .changed-scroll.scrollable { max-height: var(--changed-height); overflow-x: hidden; overflow-y: auto; }
@@ -1268,7 +1376,8 @@ onBeforeUnmount(() => {
 .changed-file-search { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); padding-inline: var(--gl-spacing-4); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); background: var(--gl-surface-raised); }
 .changed-file-search > .gl-input { min-width: 0; flex: 1; height: 26px; padding: 0; border: 0; background: transparent; }
 .changed-file-search > .gl-input:focus { outline: none; }
-.changed-file-result-count { grid-column: 1 / -1; color: var(--gl-text-subtle); font-size: 11px; }
+.changed-file-result-count { grid-column: 1 / -1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 11px; }
+.changed-file-result-help { min-width: 0; color: var(--gl-text-subtle); font-size: 10px; }
 .changed-tree-list { display: grid; align-content: start; gap: var(--gl-spacing-2); }
 .changed-flat-list { display: grid; align-content: start; gap: 1px; padding-inline: var(--gl-spacing-4); }
 .changed-flat-file {
@@ -1313,10 +1422,17 @@ onBeforeUnmount(() => {
 .commit-list.expanded { max-height: 430px; }
 .commit-item { position: relative; border-bottom: 1px solid var(--gl-border-subtle); }
 .commit-item:not(:last-child)::before { content: ""; position: absolute; left: 11px; top: 22px; bottom: -1px; width: 1px; background: color-mix(in srgb, var(--gl-commit-accent) 60%, transparent); pointer-events: none; }
-.commit-row { width: 100%; min-width: 0; min-height: 32px; display: grid; grid-template-columns: 8px 52px minmax(90px, 1fr) minmax(48px, auto) auto 16px; gap: var(--gl-spacing-8); align-items: center; padding: var(--gl-spacing-4) var(--gl-spacing-8); color: var(--gl-text-default); background: transparent; text-align: left; cursor: pointer; }
+.commit-row { position: relative; width: 100%; min-width: 0; min-height: 32px; display: grid; grid-template-columns: 8px 52px minmax(90px, 1fr) minmax(48px, auto) auto auto; gap: var(--gl-spacing-8); align-items: center; padding: var(--gl-spacing-4) var(--gl-spacing-8); color: var(--gl-text-default); background: transparent; text-align: left; cursor: pointer; transition: background-color var(--gl-motion-duration-fast) var(--gl-motion-ease-standard); }
+.commit-row::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--gl-commit-accent); pointer-events: none; transform: scaleY(0); transform-origin: center; transition: transform var(--gl-motion-duration-fast) var(--gl-motion-ease-standard); }
 .commit-row:hover { background: var(--gl-hover-surface); }
-.commit-row.active { background: color-mix(in srgb, var(--gl-commit-accent) 12%, var(--gl-surface-raised)); box-shadow: inset 2px 0 var(--gl-commit-accent); }
+.commit-row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.commit-row.active { background: color-mix(in srgb, var(--gl-commit-accent) 12%, var(--gl-surface-raised)); }
 .commit-row .commit-author, .commit-row time { color: var(--gl-text-subtle); font-size: 10px; }
+.commit-row.active::before { transform: scaleY(1); }
+.commit-row-action { min-width: 14px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px; color: var(--gl-text-subtle); font-size: 10px; font-weight: 600; white-space: nowrap; }
+.commit-row:hover .commit-row-action, .commit-row:focus-visible .commit-row-action, .commit-row.active .commit-row-action { color: var(--gl-commit-accent); }
+.commit-detail-shell { display: grid; grid-template-rows: 1fr; overflow: hidden; }
+.commit-detail-shell > .commit-detail { min-height: 0; }
 .commit-detail { border-top: 1px solid var(--gl-border-subtle); background: var(--gl-surface-subtle); }
 .commit-detail > header { min-height: 28px; display: flex; justify-content: space-between; align-items: center; padding: var(--gl-spacing-4) var(--gl-spacing-8); color: var(--gl-text-subtle); font-size: 10px; }
 .commit-files { display: grid; border-top: 1px solid var(--gl-border-subtle); }
@@ -1331,7 +1447,8 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .thread-search-input { min-width: 0; height: 28px; padding-block: var(--gl-spacing-4); }
 .thread-search-input::-webkit-search-cancel-button { display: none; }
 .thread-search-status { grid-column: 1 / -1; color: var(--gl-text-subtle); font-size: 10px; }
-.new-thread-composer { min-width: 0; margin-bottom: var(--gl-spacing-8); }
+.new-thread-composer { min-width: 0; margin-bottom: var(--gl-spacing-8); scroll-margin-bottom: var(--review-submit-reserved-space, 0px); }
+.new-thread-composer.has-submission-tray { padding-bottom: var(--review-submit-reserved-space, 0px); }
 .new-thread-heading { display: flex; align-items: center; gap: var(--gl-spacing-4); margin-bottom: var(--gl-spacing-4); color: var(--gl-text-strong); font-size: 11px; font-weight: 600; }
 .submission-mode-row { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-8); margin-bottom: var(--gl-spacing-4); }
 .submission-mode-label { flex: none; color: var(--gl-text-subtle); font-size: 10px; }
@@ -1355,6 +1472,7 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .review-submit-tray-copy small { overflow: hidden; color: var(--gl-text-subtle); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .review-submit-tray-actions { flex: none; justify-content: flex-end; }
 .commit-section .collapsible-section-title > .gl-icon { color: var(--gl-commit-accent); }
+.thread-section :deep(.gl-section-header) { min-height: 24px; padding-inline: var(--gl-spacing-8); border-bottom: 1px solid var(--gl-border-subtle); }
 .thread-section :deep(.gl-section-title > .gl-icon) { color: var(--gl-thread-accent); }
 .thread {
   overflow: hidden;
@@ -1367,6 +1485,12 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
   border-left-width: 4px;
   border-left-color: var(--gl-resolved-accent);
   background: color-mix(in srgb, var(--gl-resolved-accent) 4%, var(--gl-surface-raised));
+}
+.thread.resolved.collapsed {
+  border-color: var(--gl-border-subtle);
+  border-left-width: 2px;
+  border-radius: var(--gl-radius-sm);
+  background: transparent;
 }
 .thread-header {
   min-height: 36px;
@@ -1384,6 +1508,7 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
   border-bottom-color: color-mix(in srgb, var(--gl-resolved-accent) 24%, var(--gl-border-subtle));
   background: color-mix(in srgb, var(--gl-resolved-accent) 12%, var(--gl-surface-subtle));
 }
+.thread.resolved.collapsed .thread-header { min-height: 28px; padding-block: var(--gl-spacing-2); border-bottom: 0; background: transparent; }
 .thread-toggle {
   min-width: 0;
   min-height: 28px;
@@ -1400,18 +1525,25 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
   cursor: pointer;
 }
 .thread-toggle:hover { background: var(--gl-hover-surface); }
-.thread-toggle > :first-child { color: var(--gl-text-subtle); transition: transform .12s; }
+.thread-toggle > :first-child { color: var(--gl-text-subtle); transition: transform var(--gl-motion-duration-fast) var(--gl-motion-ease-standard); }
 .thread.resolved .thread-toggle > :first-child { color: var(--gl-resolved-accent); }
+.thread.resolved.collapsed .thread-toggle > :first-child { color: var(--gl-text-subtle); }
 .thread-toggle[aria-expanded="true"] > :first-child { transform: rotate(90deg); }
 .thread-heading { min-width: 0; flex: 1; display: grid; gap: 1px; overflow: hidden; }
 .thread-summary-line { min-width: 0; display: flex; align-items: baseline; gap: var(--gl-spacing-4); overflow: hidden; white-space: nowrap; }
 .reply-count-link { flex: none; color: var(--gl-text-link); font-size: 11px; text-decoration: underline; }
 .thread-last-reply { min-width: 0; color: var(--gl-text-subtle); font-size: 11px; }
 .thread-last-reply b, .thread-expanded-title { color: var(--gl-text-strong); font-size: 11px; }
+.thread-expanded-title, .thread-location { min-width: 0; display: block; }
 .thread-location { color: var(--gl-text-subtle); font: 11px var(--vscode-editor-font-family); }
 .thread-search-excerpt { color: var(--gl-text-subtle); font-size: 11px; }
 .view-diff-action { min-height: 28px; white-space: nowrap; color: var(--gl-thread-accent); }
 .view-diff-action:hover:not(:disabled) { color: var(--gl-text-strong); background: color-mix(in srgb, var(--gl-thread-accent) 12%, transparent); }
+.thread.resolved.collapsed .view-diff-action { color: var(--gl-text-subtle); }
+.thread.resolved.collapsed .view-diff-action:hover:not(:disabled) { color: var(--gl-hover-text); background: var(--gl-hover-surface); }
+.thread.resolved.collapsed .thread-status-action.resolved { border-color: transparent; color: var(--gl-text-subtle); background: transparent; font-weight: 500; }
+.thread.resolved.collapsed .thread-status-action.resolved.has-action:hover,
+.thread.resolved.collapsed .thread-status-action.resolved.has-action:focus-visible { border-color: var(--gl-border-default); color: var(--gl-hover-text); background: var(--gl-hover-surface); }
 .comment-edit-action { color: var(--gl-text-subtle); }
 .comment-edit-action:hover:not(:disabled) { color: var(--gl-thread-accent); }
 .thread-actions { display: inline-flex; align-items: center; gap: var(--gl-spacing-2); white-space: nowrap; }
@@ -1424,7 +1556,20 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 }
 
 @media (max-width: 360px) {
-  .commit-row { grid-template-columns: 8px 48px minmax(0, 1fr) auto 16px; }
+  .new-thread-composer.has-submission-tray {
+    --review-submit-reserved-space: calc(var(--gl-spacing-32) + var(--gl-spacing-24) + var(--gl-spacing-16) + var(--gl-spacing-8));
+    margin-top: calc(-1 * (var(--gl-spacing-12) + var(--gl-spacing-4)));
+  }
+  .new-thread-composer.has-submission-tray :deep(.new-thread-form.gl-comment-form) { padding: var(--gl-spacing-4); }
+  .new-thread-composer.has-submission-tray :deep(.new-thread-form .rich-comment-editor) { min-height: 26px; }
+  .branch-flow { flex-direction: column; align-items: stretch; gap: var(--gl-spacing-2); }
+  .branch-flow button { width: 100%; max-width: none; }
+  .branch-flow > :deep(.gl-icon) { align-self: center; transform: rotate(90deg); }
+  .thread-header { grid-template-columns: minmax(0, 1fr); }
+  .thread-toggle { grid-column: 1; grid-row: 1; }
+  .thread-actions { grid-column: 1; grid-row: 2; justify-self: end; padding-inline: var(--gl-spacing-2); }
+  .commit-row { grid-template-columns: 8px 48px minmax(0, 1fr) auto auto; }
+  .commit-row-action-label { display: none; }
   .commit-author { display: none; }
   .submission-mode-help { display: none; }
   .pending-review-header { flex-wrap: wrap; }
@@ -1434,4 +1579,5 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
   .review-submit-tray-copy { flex-basis: 100%; }
   .review-submit-tray-actions { margin-left: auto; }
 }
+
 </style>

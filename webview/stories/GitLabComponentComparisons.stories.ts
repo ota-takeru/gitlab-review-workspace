@@ -21,10 +21,14 @@ import SidebarTabs from "../sidebar/SidebarTabs.vue";
 import TreeItem from "../sidebar/TreeItem.vue";
 import WorkItemRow from "../sidebar/WorkItemRow.vue";
 import ComponentComparisonFrame, { type ComponentReferenceLink } from "./ComponentComparisonFrame.vue";
+import GitLabReferenceSpecimen from "./gitlab-reference/GitLabReferenceSpecimen.vue";
 import { mergeRequest } from "./myWorkFixtures";
+
+type GitLabReferenceKind = "actions" | "identity" | "navigation" | "work-item" | "tree" | "diff" | "discussion" | "editor" | "markdown" | "empty" | "popover";
 
 type Comparison = {
   comparisonId: string;
+  referenceKind: GitLabReferenceKind;
   title: string;
   extensionComponents: string[];
   gitlabComponents: string[];
@@ -38,6 +42,7 @@ type Comparison = {
 const comparisons = {
   actions: {
     comparisonId: "actions",
+    referenceKind: "actions",
     title: "Buttons and icon actions",
     extensionComponents: ["GlButton", "GlIconButton", "GlIcon"],
     gitlabComponents: ["Button", "Tooltip"],
@@ -52,6 +57,7 @@ const comparisons = {
   },
   identity: {
     comparisonId: "identity-status",
+    referenceKind: "identity",
     title: "Avatar, badge, and status identity",
     extensionComponents: ["GlAvatar", "GlBadge", "GlStatusBadge"],
     gitlabComponents: ["Avatar", "Badge"],
@@ -66,6 +72,7 @@ const comparisons = {
   },
   navigation: {
     comparisonId: "navigation-grouping",
+    referenceKind: "navigation",
     title: "Tabs and section grouping",
     extensionComponents: ["SidebarTabs", "GlSection"],
     gitlabComponents: ["Tabs", "Accordion"],
@@ -76,10 +83,11 @@ const comparisons = {
     ],
     aligned: ["One active tab with an indicator and optional count", "Concise section labels and compact actions", "Visual hierarchy stays restrained in a dense sidebar"],
     differences: ["Review / My work changes the sidebar workspace context rather than a page URL", "GlSection is a layout primitive; collapse behavior is owned by the consuming view"],
-    gaps: ["SidebarTabs does not yet implement tabpanel relationships or arrow-key tab navigation", "Pajamas advises navigation instead of tabs when changing application context"]
+    gaps: ["The Storybook specimen cannot simulate the Extension Host state transition after a tab selection", "Pajamas advises navigation instead of tabs when changing application context"]
   },
   workItem: {
     comparisonId: "work-item-row",
+    referenceKind: "work-item",
     title: "Merge request work item row",
     extensionComponents: ["WorkItemRow", "GlBadge", "GlIcon"],
     gitlabComponents: ["Attribute list", "Badge", "MR list item"],
@@ -94,6 +102,7 @@ const comparisons = {
   },
   tree: {
     comparisonId: "file-tree",
+    referenceKind: "tree",
     title: "Changed-file and branch tree",
     extensionComponents: ["TreeItem", "GlSection", "GlIcon"],
     gitlabComponents: ["Tree", "Accordion"],
@@ -108,6 +117,7 @@ const comparisons = {
   },
   diff: {
     comparisonId: "diff-controls",
+    referenceKind: "diff",
     title: "Diff header, range toggle, and table",
     extensionComponents: ["GlDiffHeader", "GlDiffScopeToggle", "GlDiffTable"],
     gitlabComponents: ["Merge request Changes", "Button group"],
@@ -122,6 +132,7 @@ const comparisons = {
   },
   discussion: {
     comparisonId: "discussion-thread",
+    referenceKind: "discussion",
     title: "Comment and thread lifecycle",
     extensionComponents: ["GlComment", "GlThreadStatusAction", "GlAvatar", "GlMarkdown"],
     gitlabComponents: ["Discussion thread", "Button", "Avatar"],
@@ -136,6 +147,7 @@ const comparisons = {
   },
   editor: {
     comparisonId: "comment-editor",
+    referenceKind: "editor",
     title: "Review comment editor",
     extensionComponents: ["GlCommentForm", "GlIconButton", "GlButton"],
     gitlabComponents: ["Rich text editor", "Button", "GLFM"],
@@ -150,6 +162,7 @@ const comparisons = {
   },
   markdown: {
     comparisonId: "markdown-images",
+    referenceKind: "markdown",
     title: "Rendered Markdown and comment images",
     extensionComponents: ["GlMarkdown", "commentImages"],
     gitlabComponents: ["GLFM renderer", "Modal", "User uploads"],
@@ -165,6 +178,7 @@ const comparisons = {
   },
   empty: {
     comparisonId: "empty-loading",
+    referenceKind: "empty",
     title: "Empty, loading, and retry states",
     extensionComponents: ["GlEmptyState", "GlButton", "GlIcon"],
     gitlabComponents: ["Empty state", "Spinner"],
@@ -179,6 +193,7 @@ const comparisons = {
   },
   popover: {
     comparisonId: "popover",
+    referenceKind: "popover",
     title: "Context popover",
     extensionComponents: ["GlPopover", "GlIconButton"],
     gitlabComponents: ["Popover"],
@@ -206,9 +221,15 @@ function renderComparison(
   setupFactory: SetupFactory = () => ({})
 ) {
   return () => ({
-    components: { ComponentComparisonFrame, ...components },
+    components: { ComponentComparisonFrame, GitLabReferenceSpecimen, ...components },
     setup() { return { comparison, ...setupFactory() }; },
-    template: `<ComponentComparisonFrame v-bind="comparison">${specimen}</ComponentComparisonFrame>`
+    template: `
+      <ComponentComparisonFrame v-bind="comparison">
+        ${specimen}
+        <template #gitlab-reference>
+          <GitLabReferenceSpecimen :kind="comparison.referenceKind" />
+        </template>
+      </ComponentComparisonFrame>`
   });
 }
 
@@ -219,6 +240,10 @@ function comparisonPlay(comparison: Comparison) {
     await expect(root).toBeVisible();
     await expect(canvas.getByRole("heading", { name: comparison.title })).toBeVisible();
     await expect(canvas.getByLabelText("Extension component specimen")).toBeVisible();
+    await expect(canvas.getByLabelText("Rendered GitLab/Pajamas specimen")).toBeVisible();
+    const gitlabSpecimen = canvas.getByLabelText("GitLab reference specimen");
+    await expect(gitlabSpecimen).toBeVisible();
+    await expect(gitlabSpecimen).toHaveAttribute("data-gitlab-reference-kind", comparison.referenceKind);
     const links = canvas.getAllByRole("link");
     await expect(links).toHaveLength(comparison.references.length);
     for (const link of links) {
@@ -271,6 +296,15 @@ export const NavigationAndGrouping: Story = {
     const canvas = within(context.canvasElement);
     await userEvent.click(canvas.getByRole("tab", { name: /My work/ }));
     await expect(canvas.getByRole("tab", { name: /My work/ })).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{Home}");
+    await expect(canvas.getByRole("tab", { name: "Review" })).toHaveAttribute("aria-selected", "true");
+    await expect(canvas.getByRole("tab", { name: "Review" })).toHaveFocus();
+    await userEvent.keyboard("{End}");
+    await expect(canvas.getByRole("tab", { name: /My work/ })).toHaveAttribute("aria-selected", "true");
+    await expect(canvas.getByRole("tab", { name: /My work/ })).toHaveFocus();
+    const gitlab = within(canvas.getByLabelText("GitLab reference specimen"));
+    await userEvent.click(gitlab.getByRole("tab", { name: /Activity/ }));
+    await expect(gitlab.getByRole("tabpanel", { name: /Activity/ })).toHaveTextContent("Recent discussion activity");
   }
 };
 
@@ -303,7 +337,13 @@ export const FileTree: Story = {
       <TreeItem :node="tree" kind="changed" active-file-path="webview/App.vue" />
     </div>`,
     () => ({ tree: changedTree })),
-  play: comparisonPlay(comparisons.tree)
+  play: async (context) => {
+    await comparisonPlay(comparisons.tree)(context);
+    const gitlab = within(within(context.canvasElement).getByLabelText("GitLab reference specimen"));
+    const folder = gitlab.getByRole("treeitem", { name: /webview/ });
+    await userEvent.click(folder);
+    await expect(folder).toHaveAttribute("aria-expanded", "false");
+  }
 };
 
 const diffLines: GlDiffLine[] = [
@@ -327,6 +367,9 @@ export const DiffControls: Story = {
     const canvas = within(context.canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "Entire file" }));
     await expect(canvas.getByRole("button", { name: "Entire file" })).toHaveAttribute("aria-pressed", "true");
+    const gitlab = within(canvas.getByLabelText("GitLab reference specimen"));
+    await userEvent.click(gitlab.getByRole("button", { name: "File" }));
+    await expect(gitlab.getByRole("button", { name: "File" })).toHaveAttribute("aria-pressed", "true");
   }
 };
 
@@ -339,7 +382,12 @@ export const DiscussionThread: Story = {
       </GlComment>
     </div>`,
     () => ({ resolved: ref(false) })),
-  play: comparisonPlay(comparisons.discussion)
+  play: async (context) => {
+    await comparisonPlay(comparisons.discussion)(context);
+    const gitlab = within(within(context.canvasElement).getByLabelText("GitLab reference specimen"));
+    await userEvent.click(gitlab.getByRole("button", { name: "Resolve thread" }));
+    await expect(gitlab.getByRole("button", { name: "Reopen" })).toHaveAttribute("aria-pressed", "true");
+  }
 };
 
 export const CommentEditor: Story = {
@@ -351,6 +399,7 @@ export const CommentEditor: Story = {
     const canvas = within(context.canvasElement);
     await userEvent.click(canvas.getByRole("textbox", { name: "Comparison review comment" }));
     await expect(canvas.getByRole("toolbar", { name: "Markdown formatting" })).toBeVisible();
+    await expect(within(canvas.getByLabelText("GitLab reference specimen")).getByRole("toolbar", { name: "Rich text formatting" })).toBeVisible();
   }
 };
 
@@ -389,6 +438,10 @@ export const ContextPopover: Story = {
     () => ({ popoverOpen: ref(true) })),
   play: async (context) => {
     await comparisonPlay(comparisons.popover)(context);
-    await expect(within(context.canvasElement).getByRole("dialog", { name: "Local workspace actions" })).toBeVisible();
+    const canvas = within(context.canvasElement);
+    await expect(canvas.getByRole("dialog", { name: "Local workspace actions" })).toBeVisible();
+    const gitlab = within(canvas.getByLabelText("GitLab reference specimen"));
+    await userEvent.click(gitlab.getByRole("button", { name: "Open local actions" }));
+    await expect(gitlab.getByRole("dialog", { name: "Local workspace actions" })).toBeVisible();
   }
 };

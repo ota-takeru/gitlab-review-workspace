@@ -1,0 +1,126 @@
+iteration:
+  surface: "<screen brief name>"
+  primary_task: "<verb phrase>"
+  reviewed_report: "<path or report identifier>"
+  policy:
+    profile_path: "<resolved profile path>"
+    schema_version: "<version>"
+    compatibility_mode: "preferred | legacy_v2"
+    fingerprint_sha256: "<current fingerprint>"
+    report_fingerprint_sha256: "<fingerprint from accepted review, or null for a legacy report>"
+    fingerprint_match: "true | false | legacy_unavailable"
+    compatibility_warnings:
+      - "<legacy_report_without_policy_fingerprint, or leave empty>"
+    adapters:
+      - "<configured evidence or host adapter>"
+  accepted_hypothesis:
+    id: "<hypothesis ID for traceability; the user need not repeat it>"
+    statement: "<accepted behavioral or structural hypothesis>"
+    accepted_by: "<clear assent to the immediately preceding single recommendation or direct implementation request; record text/person/date>"
+    authorization:
+      mode: "single_supported_recommendation_assent | direct_request"
+      text: "<actual assent or request; e.g. その方針で / 進めて / お願いします>"
+    evidence_ids: []
+    affected_slice: "<supported dimension, state, or transition>"
+    proof_plan: "<same-condition plan from the accepted report>"
+  scope:
+    intended_files: []
+    excluded_work:
+      - "unrelated feel or visual changes"
+      - "production dependencies, one-off tokens, and speculative refactors"
+
+condition:
+  provider: "<configured evidence adapter>"
+  story_or_url: "<exact story ID, route, host path, or evidence locator>"
+  fixture: "<fixture or data state allowed by project policy>"
+  viewport: "<viewport or host environment>"
+  theme: "<configured theme or display mode>"
+  starting_state: "<initial state>"
+  required_host_transitions: []
+  interaction_sequence:
+    - "<exact pointer/keyboard action and wait>"
+  repetitions_required: 2
+
+baseline:
+  reproduced: true
+  captured_at: "<ISO-8601 date>"
+  artifacts: []
+  repetitions:
+    - id: "R1"
+      evidence_ids: []
+      phases:
+        orient_predict: "<objective fact>"
+        act: "<objective fact>"
+        acknowledgement: "<objective fact>"
+        pending: "<objective fact or not_observed>"
+        outcome: "<objective fact>"
+        next_action_recovery: "<objective fact>"
+    - id: "R2"
+      evidence_ids: []
+      phases:
+        orient_predict: "<objective fact>"
+        act: "<objective fact>"
+        acknowledgement: "<objective fact>"
+        pending: "<objective fact or not_observed>"
+        outcome: "<objective fact>"
+        next_action_recovery: "<objective fact>"
+  blockers: []
+
+changes:
+  causal_edits:
+    - file: "<path>"
+      change: "<what changed and how it tests the accepted hypothesis>"
+  story_updated: false
+  story_change_reason: "<none, or why the nearest story needed a fixture-only update>"
+  dependencies_added: []
+
+after:
+  exact_condition_reproduced: true
+  captured_at: "<ISO-8601 date>"
+  artifacts: []
+  repetitions:
+    - id: "R1"
+      evidence_ids: []
+      phases:
+        orient_predict: "<objective fact>"
+        act: "<objective fact>"
+        acknowledgement: "<objective fact>"
+        pending: "<objective fact or not_observed>"
+        outcome: "<objective fact>"
+        next_action_recovery: "<objective fact>"
+    - id: "R2"
+      evidence_ids: []
+      phases:
+        orient_predict: "<objective fact>"
+        act: "<objective fact>"
+        acknowledgement: "<objective fact>"
+        pending: "<objective fact or not_observed>"
+        outcome: "<objective fact>"
+        next_action_recovery: "<objective fact>"
+  objective_before_after:
+    - "<fact-only comparison tied to baseline and after evidence IDs>"
+  action_result_comparison:
+    - "<origin/result semantic identity, visual correspondence, path, peer context, and retained-anchor fact when relevant>"
+  limitations: []
+
+validation:
+  checks:
+    - command_id: "<configured command ID>"
+      argv: []
+      result: "passed | failed | not_run"
+      notes: "<result or reason>"
+  not_run: []
+
+risks:
+  rollback: "<smallest reversible file/revert set>"
+  regression_watchpoints:
+    - "<async acknowledgement, draft retention, focus/selection, anchoring, density/theme, or protocol risk>"
+
+handoff:
+  feel_verdict: "pending_independent_review"
+  independent_ui_feel_review:
+    required: true
+    request: "Run a fresh $ui-feel-review with this exact profile fingerprint, provider/locator, data state, environment, display mode, starting state, host transitions, and repeated sequence; judge the accepted hypothesis without relying on this implementation record."
+  ui_review_follow_up:
+    required: false
+    reasons: []

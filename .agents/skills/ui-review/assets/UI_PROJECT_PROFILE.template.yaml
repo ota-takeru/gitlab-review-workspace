@@ -1,0 +1,113 @@
+schema_version: 1
+
+project:
+  name: "<product name>"
+  category: "<product category>"
+  promise: "<primary user promise>"
+
+contracts:
+  read:
+    - README.md
+    - "<design contract path>"
+  visual_quality: "<visual-quality contract path>"
+  surface_briefs: "<surface brief glob or directory>"
+
+adapters:
+  rendered_ui:
+    type: evidence
+    provider: browser
+  product_host:
+    type: host
+    host: web
+
+domain:
+  context_anchors:
+    - "<task object identity>"
+    - selection
+    - draft
+  reference_systems:
+    - name: "<reference product or design system>"
+      traits:
+        - "<exact trait to borrow>"
+
+evidence:
+  data_policy: synthetic_or_public
+  output_root: output/ui-evidence
+  capture:
+    argv: ["<capture executable>", "<argument>"]
+  lanes: [canonical, constrained, pressure]
+  themes: [light, dark]
+  viewports:
+    canonical: "<width>x<height>"
+    constrained: "<width>x<height>"
+  required_states: [ready, loading, empty, error, pending, long_content]
+  minimum_repetitions: 2
+
+evaluation:
+  score_range: [0, 4]
+  axes:
+    - id: primary_task_clarity
+      weight: 15
+      criterion: "Whether the next meaningful action and result are apparent."
+    - id: context_continuity
+      weight: 15
+      criterion: "Whether configured task identities remain connected."
+    - id: workflow_efficiency
+      weight: 10
+      criterion: "Scan, navigation, interruption, and repeated effort."
+    - id: state_feedback_and_recovery
+      weight: 10
+      criterion: "Acknowledgement, pending, outcome, retry, undo, and retained work."
+    - id: visual_hierarchy_and_composition
+      weight: 15
+      criterion: "Focal order, grouping, alignment, balance, and competing emphasis."
+    - id: typography_spacing_and_density
+      weight: 10
+      criterion: "Text roles, proximity rhythm, technical content, and constrained pressure."
+    - id: color_surface_and_component_coherence
+      weight: 10
+      criterion: "Semantic color, surface economy, theme parity, components, and affordances."
+    - id: keyboard_and_accessibility
+      weight: 10
+      criterion: "Keyboard completion, focus, names, contrast, non-color meaning, and announcements."
+    - id: host_and_domain_fit
+      weight: 5
+      criterion: "Fit with the configured host, domain vocabulary, and referenced traits."
+  hard_gates:
+    - id: keyboard_completion
+      fail_when: "A primary task cannot be completed with a keyboard when keyboard use is applicable."
+    - id: visible_focus
+      fail_when: "Keyboard focus is missing, obscured, or indistinguishable."
+    - id: non_color_state
+      fail_when: "Meaning or status is communicated by color alone."
+    - id: destructive_recovery
+      fail_when: "A destructive action can cause material loss without confirmation or recovery."
+    - id: required_state_evidence
+      fail_when: "A project-required state has no reproducible evidence."
+    - id: credential_safety
+      fail_when: "Evidence contains credentials or unauthorized private data."
+  iteration:
+    maximum_issues_to_fix: 3
+    priority_factors: [user_impact, occurrence_frequency, evidence_confidence, implementation_risk]
+    require_same_condition_before_after: true
+
+implementation:
+  source_roots:
+    - "<UI source root>"
+  generated_paths:
+    - "<generated output path>"
+  shared_ui_sources:
+    - "<shared component root>"
+  token_sources:
+    - "<semantic token source>"
+  protocol_contracts: []
+  dependency_policy: approval_required
+
+validation:
+  commands:
+    - id: check
+      condition: ui_source_changed
+      argv: ["<package manager>", "<check arguments>"]
+    - id: test
+      condition: source_behavior_changed
+      argv: ["<package manager>", "<test arguments>"]

@@ -2,6 +2,7 @@ import { runGlab } from "./glabCommand";
 import {
   GitLabDiscussion,
   GitLabDiscussionNote,
+  GitLabAwardEmoji,
   GitLabCommit,
   GitLabCommitDiff,
   GitLabTodo,
@@ -12,6 +13,7 @@ import {
   mapGitLabCommits,
   mapGitLabCommitDiffs,
   mapGitLabNote,
+  mapGitLabAwardEmoji,
   mapGitLabTodos,
   mapGitLabMyWorkMergeRequests,
   mapGitLabMyWorkTodos,
@@ -32,6 +34,7 @@ import {
   ReviewFile,
   ReviewFileContents,
   ReviewNotification,
+  ReviewReaction,
   ReviewState,
   ReviewThread
 } from "./reviewTypes";
@@ -131,6 +134,9 @@ interface GitLabDraftNote {
 }
 
 export class GitLabReviewClient {
+  private currentUser?: GitLabUser;
+  private currentUserLoad?: Promise<GitLabUser | undefined>;
+
   constructor(private readonly hostname: string) {}
 
   getHostname(): string {
@@ -151,15 +157,15 @@ export class GitLabReviewClient {
   }
 
   async listMyWorkTodos(): Promise<MyWorkSourceItem[]> {
-    const todos = await this.getPaginatedJson<GitLabTodo[]>("todos?state=pending&type=MergeRequest&per_page=100");
-    return mapGitLabMyWorkTodos(todos).slice(0, 100);
+    const todos = await this.getJson<GitLabTodo[]>("todos?state=pending&type=MergeRequest&per_page=100");
+    return mapGitLabMyWorkTodos(todos);
   }
 
   async listMyWorkMergeRequests(source: Exclude<MyWorkSource, "todo" | "candidates">): Promise<MyWorkSourceItem[]> {
-    const mergeRequests = await this.getPaginatedJson<GitLabMyWorkMergeRequest[]>(
+    const mergeRequests = await this.getJson<GitLabMyWorkMergeRequest[]>(
       `merge_requests?scope=${source}&state=opened&order_by=updated_at&sort=desc&per_page=100`
     );
-    return mapGitLabMyWorkMergeRequests(mergeRequests, source).slice(0, 100);
+    return mapGitLabMyWorkMergeRequests(mergeRequests, source);
   }
 
   async getProject(projectId: string): Promise<GitLabProject> {
@@ -221,12 +227,10 @@ export class GitLabReviewClient {
       `projects/${projectSegment(projectId)}/repository/commits/${encodeURIComponent(commitId)}`
     );
     const parentId = commit.parent_ids?.[0];
-    const oldText = file.newFile || !parentId
-      ? ""
-      : await this.getRawFile(projectId, file.oldPath, parentId);
-    const newText = file.deletedFile
-      ? ""
-      : await this.getRawFile(projectId, file.newPath, commitId);
+    const [oldText, newText] = await Promise.all([
+      file.newFile || !parentId ? Promise.resolve("") : this.getRawFile(projectId, file.oldPath, parentId),
+      file.deletedFile ? Promise.resolve("") : this.getRawFile(projectId, file.newPath, commitId)
+    ]);
     return { oldText, newText };
   }
 
@@ -279,23 +283,23 @@ export class GitLabReviewClient {
     fallbackDraftNotes: readonly ReviewDraftNote[] = []
   ): Promise<ReviewState> {
     const project = projectSegment(reference.projectId);
-    const mergeRequest = await this.getJson<GitLabMergeRequest>(
-      `projects/${project}/merge_requests/${reference.iid}`
-    );
-    const projectId = String(mergeRequest.project_id);
-    const [diffs, discussions, currentUser, commits, draftNotes] = await Promise.all([
+    const mergeRequestPath = `projects/${project}/merge_requests/${reference.iid}`;
+    const mergeRequestLoad = this.getJson<GitLabMergeRequest>(mergeRequestPath);
+    const [mergeRequest, diffs, discussions, currentUser, commits, draftNotes] = await Promise.all([
+      mergeRequestLoad,
       this.getPaginatedJson<GitLabCommitDiff[]>(
-        `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/diffs?per_page=100`
+        `${mergeRequestPath}/diffs?per_page=100`
       ),
       this.getPaginatedJson<GitLabDiscussion[]>(
-        `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/discussions?per_page=100`
+        `${mergeRequestPath}/discussions?per_page=100`
       ),
-      this.getJson<GitLabUser>("user").catch(() => undefined),
-      this.listMergeRequestCommits(projectId, mergeRequest.iid).catch(() => [...fallbackCommits]),
+      this.getCurrentUser(),
+      this.listMergeRequestCommits(reference.projectId, reference.iid).catch(() => [...fallbackCommits]),
       this.getPaginatedJson<GitLabDraftNote[]>(
-        `projects/${projectSegment(projectId)}/merge_requests/${mergeRequest.iid}/draft_notes?per_page=100`
+        `${mergeRequestPath}/draft_notes?per_page=100`
       ).then((notes) => notes.map(toReviewDraftNote)).catch(() => [...fallbackDraftNotes])
     ]);
+    const projectId = String(mergeRequest.project_id);
     const baseSha = mergeRequest.diff_refs?.base_sha;
     const startSha = mergeRequest.diff_refs?.start_sha;
     const headSha = mergeRequest.diff_refs?.head_sha;
@@ -309,6 +313,7 @@ export class GitLabReviewClient {
       id: `${projectId}!${mergeRequest.iid}`,
       projectId,
       mergeRequestIid: mergeRequest.iid,
+      currentUserId: currentUser?.id === undefined ? undefined : String(currentUser.id),
       webUrl: mergeRequest.web_url,
       diffRefs: { baseSha, startSha, headSha },
       title: mergeRequest.title,
@@ -322,6 +327,49 @@ export class GitLabReviewClient {
       threads: mapGitLabDiscussions(discussions, currentUser?.id),
       draftNotes
     };
+  }
+
+  async listCommentReactions(review: ReviewState, noteId: string): Promise<ReviewReaction[]> {
+    const awards = await this.getPaginatedJson<GitLabAwardEmoji[]>(
+      `${commentAwardEmojiPath(review, noteId)}?per_page=100`
+    );
+    return mapGitLabAwardEmoji(awards, review.currentUserId);
+  }
+
+  async addCommentReaction(review: ReviewState, noteId: string, name: string): Promise<ReviewReaction> {
+    const normalizedName = normalizeReactionName(name);
+    const award = await this.requestJson<GitLabAwardEmoji>(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "POST",
+        commentAwardEmojiPath(review, noteId),
+        "--raw-field",
+        `name=${normalizedName}`
+      ],
+      "Could not add the GitLab emoji reaction."
+    );
+    const mapped = mapGitLabAwardEmoji([award], review.currentUserId)[0];
+    return {
+      ...(mapped ?? { name: normalizedName, count: 1, users: [] }),
+      currentUserAwardId: String(award.id)
+    };
+  }
+
+  async removeCommentReaction(review: ReviewState, noteId: string, awardId: string): Promise<void> {
+    await this.requestVoid(
+      [
+        "api",
+        "--hostname",
+        this.hostname,
+        "--method",
+        "DELETE",
+        `${commentAwardEmojiPath(review, noteId)}/${encodeURIComponent(awardId)}`
+      ],
+      "Could not remove the GitLab emoji reaction."
+    );
   }
 
   async loadMergeRequestFileContents(review: ReviewState, file: ReviewFile): Promise<ReviewFileContents> {
@@ -586,6 +634,24 @@ export class GitLabReviewClient {
     });
   }
 
+  private getCurrentUser(): Promise<GitLabUser | undefined> {
+    if (this.currentUser) return Promise.resolve(this.currentUser);
+    if (this.currentUserLoad) return this.currentUserLoad;
+
+    let load: Promise<GitLabUser | undefined>;
+    load = this.getJson<GitLabUser>("user")
+      .then((user) => {
+        this.currentUser = user;
+        return user;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.currentUserLoad === load) this.currentUserLoad = undefined;
+      });
+    this.currentUserLoad = load;
+    return load;
+  }
+
   private async getJson<T>(endpoint: string): Promise<T> {
     const result = await runGlab(["api", "--hostname", this.hostname, endpoint, "--output", "json"]);
     if (!result.ok) {
@@ -684,6 +750,18 @@ export function toMergeRequestOption(mergeRequest: GitLabMergeRequest): MergeReq
 
 function projectSegment(projectId: string): string {
   return encodeURIComponent(projectId);
+}
+
+function commentAwardEmojiPath(review: ReviewState, noteId: string): string {
+  return `projects/${projectSegment(review.projectId)}/merge_requests/${review.mergeRequestIid}/notes/${encodeURIComponent(noteId)}/award_emoji`;
+}
+
+export function normalizeReactionName(value: string): string {
+  const normalized = value.trim().replace(/^:+|:+$/g, "");
+  if (!normalized || normalized.length > 100 || !/^[\p{L}\p{N}_+\-]+$/u.test(normalized)) {
+    throw new Error("The emoji reaction name is invalid.");
+  }
+  return normalized;
 }
 
 function parsePaginatedJson<T>(stdout: string): T {

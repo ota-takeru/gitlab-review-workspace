@@ -1,0 +1,145 @@
+review:
+  surface: "<screen brief name>"
+  scope: "<what was reviewed>"
+  reviewed_at: "<ISO-8601 date>"
+  # Fail only for a configured hard-gate failure or an explicit project verdict rule; do not infer a score threshold.
+  verdict: "pass | fail"
+  weighted_score_percent: 0.0
+
+policy:
+  status: "resolved | absent | invalid"
+  profile_path: "<absolute or repository-relative path, or null>"
+  schema_version: "<version or null>"
+  compatibility_mode: "preferred | legacy_v2 | generic_defaults"
+  fingerprint_sha256: "<fingerprint or null>"
+  adapters:
+    - "<configured evidence or host adapter>"
+  warnings: []
+
+evidence:
+  - id: "<case, story, route, or evidence ID>"
+    provider: "<storybook | browser | native-host | screenshot | configured adapter>"
+    screenshot: "<path or URL>"
+    viewport: "<width>x<height>"
+    theme_or_mode: "<configured theme or display mode>"
+    state: "<ready, pending, error, constrained, etc.>"
+    inspected: "<visible regions and interactions inspected>"
+
+visual_grammar_inventory:
+  peer_groups:
+    - id: "<generic peer group ID>"
+      semantic_role: "<shared role, not a product-specific label>"
+      members:
+        - "<region or component evidence location>"
+      grammar:
+        containment: "<container relationship>"
+        inset_alignment: "<shared inset and alignment anchors>"
+        header_pattern: "<label/header treatment>"
+        border_radius_surface_accent: "<visible surface grammar>"
+        density_disclosure: "<density and collapsed/expanded behavior>"
+      coherence: "coherent | mixed | competing | insufficient_evidence"
+      evidence: "<case, viewport, theme, and visible comparison>"
+      unexplained_difference: "<difference and why it is or is not justified>"
+  summary: "<observation of repeated grammar, proliferation, or competing surfaces>"
+
+evidence_parity:
+  surface: "<surface name>"
+  coverage:
+    canonical:
+      status: "complete | partial | missing"
+      cases:
+        - "<case ID>"
+    constrained:
+      status: "complete | partial | missing"
+      cases:
+        - "<case ID>"
+    pressure:
+      status: "complete | partial | missing"
+      cases:
+        - "<case ID>"
+    theme_pair:
+      status: "complete | partial | missing"
+      pairs:
+        - "<matched case/state pair>"
+  state_vectors:
+    - evidence_id: "<case ID>"
+      lane: "canonical | constrained | pressure | other"
+      content_volume: "low | medium | high | unknown"
+      active_states:
+        - "<simultaneously visible state>"
+      disclosure: "collapsed | expanded | mixed | unknown"
+      warnings_errors:
+        - "<visible warning/error or none>"
+      viewport_theme: "<viewport/environment and configured display mode>"
+  live_vs_fixture:
+    representativeness: "complete | partial | missing | not_compared"
+    observation: "<state-vector comparison and evidence>"
+  runtime_build_cache_mismatch:
+    suspected: "true | false | not_assessed"
+    evidence: "<visible contradiction, or none>"
+    confidence: "high | medium | low | not_assessed"
+
+hard_gates:
+  - id: "<gate ID>"
+    result: "pass | fail | not_observed"
+    evidence: "<reproducible observation or missing evidence>"
+
+visual_design_read:
+  first_glance:
+    primary_focal_point: "<[observation] what leads in compact/thumbnail view>"
+    current_state: "<[observation] whether the current state is immediately legible>"
+    primary_action: "<[observation] apparent next action, or that none is apparent>"
+    scan_path: "<[observation] visible focal order and grouping path>"
+    competing_focal_points:
+      - "<[observation] competing element, or leave empty>"
+  system_quality:
+    spacing_rhythm: "<[observation] proximity and repeated spacing behavior>"
+    typography_roles: "<[observation] UI, prose, code, and metadata role clarity>"
+    color_surface: "<[observation] semantic color, surface, and border economy>"
+    component_coherence: "<[observation] same appearance/behavior and affordance consistency>"
+    density: "<[observation] scan efficiency and pressure at supplied viewports>"
+    theme_parity: "<[observation] equivalent hierarchy and meaning across light/dark pairs>"
+    generic_ai_risk: "<[observation] absent or present generic card/gradient/dashboard motifs>"
+  reference_alignment:
+    borrowed_traits:
+      - reference: "<reference system named by the project profile>"
+        trait: "<exact documented trait>"
+        evidence: "<visible alignment evidence>"
+    justified_divergences:
+      - trait: "<reference trait that differs, or leave empty>"
+        divergence: "<visible difference>"
+        justification: "<host behavior, viewport, or workflow reason>"
+
+scores:
+  # Repeat once for every axis in the resolved profile; preserve project axis IDs exactly.
+  - axis: "<configured axis ID>"
+    weight: 0
+    score: 0
+    score_0_to_4: "<same score when configured range is 0..4, otherwise null>"
+    score_range: "<configured minimum..maximum>"
+    criterion: "<configured axis criterion>"
+    rationale: "<evidence-backed reason>"
+
+issues:
+  - id: "UI-001"
+    location: "<surface region or control>"
+    category: "hierarchy | composition | spacing-rhythm | typography | color-surface | component-coherence | density | affordance | distinctiveness | motion/state-continuity | accessibility | usability"
+    observation: "<[observation] what is visibly or interactively wrong>"
+    user_impact: "<[inference] task, error, time, or accessibility impact>"
+    severity: "critical | major | minor"
+    confidence: "high | medium | low"
+    evidence:
+      - "<case, viewport, theme, location>"
+    principle: "<usability, accessibility, hierarchy, consistency, or recovery basis>"
+    improvement_direction: "<behavioral or structural change, not arbitrary pixels>"
+    side_effect: "<tradeoff or regression risk>"
+
+top_three:
+  # Keep this stable handoff key; include no more than evaluation.iteration.maximum_issues_to_fix entries.
+  - issue_id: "UI-001"
+    rank: 1
+    why_now: "<impact, frequency, confidence, and risk reasoning>"
+    acceptance_evidence: "<same-condition evidence needed after a fix>"
+
+limitations:
+  - "<missing state, untested interaction, or inference boundary>"

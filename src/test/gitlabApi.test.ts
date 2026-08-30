@@ -29,6 +29,75 @@ test("toMergeRequestOption retains the merge request state", () => {
   });
 });
 
+test("comment reaction endpoints list, add, and remove award emoji", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  const received: string[][] = [];
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      received.push(args);
+      if (args.includes("POST")) {
+        return { ok: true, stdout: JSON.stringify({ id: 12, name: "thumbsup", user: { id: 7, username: "me" } }) };
+      }
+      if (args.includes("DELETE")) return { ok: true, stdout: "" };
+      return {
+        ok: true,
+        stdout: JSON.stringify([
+          { id: 10, name: "thumbsup", user: { id: 7, username: "me" } },
+          { id: 11, name: "thumbsup", user: { id: 8, username: "reviewer" } }
+        ])
+      };
+    }
+  });
+
+  const review = {
+    id: "group/project!14",
+    projectId: "group/project",
+    mergeRequestIid: 14,
+    currentUserId: "7",
+    title: "MR",
+    state: "opened" as const,
+    sourceBranch: "feature",
+    targetBranch: "main",
+    author: "author",
+    reviewers: [],
+    commits: [],
+    files: [],
+    threads: []
+  };
+
+  try {
+    const client = new GitLabReviewClient("gitlab.example.com");
+    const listed = await client.listCommentReactions(review, "note/3");
+    const added = await client.addCommentReaction(review, "note/3", ":thumbsup:");
+    await client.removeCommentReaction(review, "note/3", "award/12");
+
+    assert.equal(listed[0]?.count, 2);
+    assert.equal(listed[0]?.currentUserAwardId, "10");
+    assert.equal(added.currentUserAwardId, "12");
+    assert.deepEqual(received[0], [
+      "api",
+      "--hostname",
+      "gitlab.example.com",
+      "projects/group%2Fproject/merge_requests/14/notes/note%2F3/award_emoji?per_page=100",
+      "--paginate",
+      "--output",
+      "ndjson"
+    ]);
+    assert.deepEqual(received[1], [
+      "api", "--hostname", "gitlab.example.com", "--method", "POST",
+      "projects/group%2Fproject/merge_requests/14/notes/note%2F3/award_emoji",
+      "--raw-field", "name=thumbsup", "--output", "json"
+    ]);
+    assert.deepEqual(received[2], [
+      "api", "--hostname", "gitlab.example.com", "--method", "DELETE",
+      "projects/group%2Fproject/merge_requests/14/notes/note%2F3/award_emoji/award%2F12"
+    ]);
+  } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
 test("listPendingTodos requests pending todos and maps merge request targets", async () => {
   const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
   let receivedArgs: string[] | undefined;
@@ -104,7 +173,7 @@ test("My Work endpoints use scoped, bounded, and encoded GitLab API paths", asyn
       "projects/source%2Fgroup/repository/branches?per_page=100",
       "projects/upstream%2Fgroup/repository/compare?from=main%20branch&to=feature%2Fa&from_project_id=12%2F3"
     ]);
-    assert.deepEqual(received.slice(0, 4).map((args) => args.includes("--paginate")), [true, true, true, true]);
+    assert.deepEqual(received.slice(0, 4).map((args) => args.includes("--paginate")), [false, false, true, true]);
   } finally {
     if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
   }
@@ -516,6 +585,43 @@ test("loadCommitFileContents reads the parent and commit versions of a file", as
       "projects/group%2Fproject/repository/files/new.ts/raw?ref=sha%2Fwith%20space"
     ]);
   } finally {
+    if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
+  }
+});
+
+test("loadCommitFileContents starts old and new file requests in parallel", async () => {
+  const originalRunGlab = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  const started: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  Object.defineProperty(glabCommand, "runGlab", {
+    configurable: true,
+    value: async (args: string[]) => {
+      const endpoint = args[3] ?? "";
+      if (endpoint.endsWith("/repository/commits/commit")) {
+        return { ok: true, stdout: JSON.stringify({ parent_ids: ["parent"] }) };
+      }
+      started.push(endpoint);
+      await gate;
+      return { ok: true, stdout: endpoint.includes("ref=parent") ? "old\n" : "new\n" };
+    }
+  });
+
+  try {
+    const load = new GitLabReviewClient("gitlab.example.com").loadCommitFileContents(
+      "group/project",
+      "commit",
+      { oldPath: "old.ts", newPath: "new.ts", newFile: false, deletedFile: false }
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(started, [
+      "projects/group%2Fproject/repository/files/old.ts/raw?ref=parent",
+      "projects/group%2Fproject/repository/files/new.ts/raw?ref=commit"
+    ]);
+    release();
+    assert.deepEqual(await load, { oldText: "old\n", newText: "new\n" });
+  } finally {
+    release();
     if (originalRunGlab) Object.defineProperty(glabCommand, "runGlab", originalRunGlab);
   }
 });

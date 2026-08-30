@@ -30,6 +30,15 @@
   --gl-text-strong: var(--vscode-editor-foreground, var(--vscode-foreground));
   --gl-text-link: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #1f75cb));
 
+  /* Webview code tokens. VS Code does not expose TextMate token colors directly, so use its closest semantic icon roles. */
+  --gl-syntax-comment: var(--vscode-descriptionForeground, #6e7781);
+  --gl-syntax-keyword: var(--vscode-symbolIcon-keywordForeground, #8250df);
+  --gl-syntax-number: var(--vscode-symbolIcon-numberForeground, #0550ae);
+  --gl-syntax-property: var(--vscode-symbolIcon-propertyForeground, #953800);
+  --gl-syntax-string: var(--vscode-symbolIcon-stringForeground, #116329);
+  --gl-syntax-tag: var(--vscode-symbolIcon-classForeground, #8250df);
+  --gl-syntax-type: var(--vscode-symbolIcon-typeParameterForeground, var(--vscode-symbolIcon-classForeground, #8250df));
+
   /* Feedback */
   --gl-feedback-success: var(--vscode-testing-iconPassed, #1f883d);
   --gl-feedback-danger: var(--vscode-testing-iconFailed, #cf222e);
@@ -63,6 +72,16 @@
   --gl-disabled-opacity: .48;
   --gl-overlay-shadow: 0 8px 24px color-mix(in srgb, var(--vscode-widget-shadow, black) 35%, transparent);
 
+  /* Motion: compact timings and asymmetric curves keep state changes legible in the workbench. */
+  --gl-motion-duration-fast: 120ms;
+  --gl-motion-duration-standard: 160ms;
+  --gl-motion-duration-enter: 180ms;
+  --gl-motion-duration-exit: 120ms;
+  --gl-motion-duration-flash: 1500ms;
+  --gl-motion-ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --gl-motion-ease-enter: cubic-bezier(.2, 0, 0, 1);
+  --gl-motion-ease-exit: cubic-bezier(.4, 0, 1, 1);
+
 }
 
 body.vscode-dark {
@@ -81,6 +100,13 @@ body.vscode-dark {
   --gl-feedback-warning: #e5c07b;
   --gl-feedback-brand: #a7c7ff;
   --gl-feedback-info: #a7c7ff;
+  --gl-syntax-comment: var(--vscode-descriptionForeground, #8b949e);
+  --gl-syntax-keyword: var(--vscode-symbolIcon-keywordForeground, #d2a8ff);
+  --gl-syntax-number: var(--vscode-symbolIcon-numberForeground, #79c0ff);
+  --gl-syntax-property: var(--vscode-symbolIcon-propertyForeground, #ffa657);
+  --gl-syntax-string: var(--vscode-symbolIcon-stringForeground, #a5d6ff);
+  --gl-syntax-tag: var(--vscode-symbolIcon-classForeground, #d2a8ff);
+  --gl-syntax-type: var(--vscode-symbolIcon-typeParameterForeground, var(--vscode-symbolIcon-classForeground, #ff7b72));
   --gl-surface-default: #1f1e24;
   --gl-surface-subtle: #25232b;
   --gl-surface-raised: #2c2933;
@@ -131,8 +157,33 @@ a { color: var(--gl-text-link); }
 .gl-truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spin { display: inline-block; animation: gl-spin .9s linear infinite; }
 @keyframes gl-spin { to { transform: rotate(360deg); } }
-.flash { animation: gl-flash 1.5s ease-out; }
+.flash { animation: gl-flash var(--gl-motion-duration-flash) var(--gl-motion-ease-enter); }
 @keyframes gl-flash { from { outline: 2px solid var(--gl-focus-ring); } to { outline-color: transparent; } }
+
+/* A grid track gives collapse a bounded height without measuring content in JavaScript. */
+.gl-collapse-shell {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.gl-collapse-content { min-width: 0; min-height: 0; overflow: hidden; }
+.gl-collapse-enter-active,
+.gl-collapse-leave-active {
+  transition:
+    grid-template-rows var(--gl-motion-duration-enter) var(--gl-motion-ease-enter),
+    opacity var(--gl-motion-duration-enter) var(--gl-motion-ease-enter);
+}
+.gl-collapse-leave-active {
+  transition-duration: var(--gl-motion-duration-exit);
+  transition-timing-function: var(--gl-motion-ease-exit);
+}
+.gl-collapse-enter-from,
+.gl-collapse-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
 
 @media (forced-colors: active) {
   :root {
@@ -147,5 +198,9 @@ a { color: var(--gl-text-link); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
 }

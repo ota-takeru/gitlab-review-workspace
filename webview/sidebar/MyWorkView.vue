@@ -76,7 +76,10 @@ onMounted(() => {
             @open-mr="(mr) => $emit('openMr', mr)"
           />
         </div>
-    <GlEmptyState v-else title="No MRs need attention" icon="check-circle" compact />
+        <div v-else class="work-empty" role="status">
+          <GlIcon name="check-circle" :size="14" />
+          <span>No MRs need attention</span>
+        </div>
       </GlSection>
 
       <GlSection class="work-section active" title="In progress" :count="state.buckets.active.length" flush>
@@ -89,7 +92,10 @@ onMounted(() => {
             @open-mr="(mr) => $emit('openMr', mr)"
           />
         </div>
-    <GlEmptyState v-else title="No MRs in progress" icon="commit" compact />
+        <div v-else class="work-empty" role="status">
+          <GlIcon name="commit" :size="14" />
+          <span>No MRs in progress</span>
+        </div>
       </GlSection>
 
       <GlSection class="work-section waiting" title="Waiting" :count="state.buckets.waiting.length" flush>
@@ -102,7 +108,10 @@ onMounted(() => {
             @open-mr="(mr) => $emit('openMr', mr)"
           />
         </div>
-    <GlEmptyState v-else title="No MRs waiting" icon="information" compact />
+        <div v-else class="work-empty" role="status">
+          <GlIcon name="information" :size="14" />
+          <span>No MRs waiting</span>
+        </div>
       </GlSection>
     </template>
   </section>
@@ -125,9 +134,30 @@ onMounted(() => {
 .my-work-banner { display: flex; align-items: center; gap: var(--gl-spacing-8); padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); color: var(--gl-text-subtle); background: var(--gl-surface-raised); font-size: 10px; }
 .my-work-banner.is-warning { color: var(--gl-feedback-warning); background: var(--gl-feedback-warning-subtle); }
 .my-work-banner.is-danger { color: var(--gl-feedback-danger); background: var(--gl-feedback-danger-subtle); }
-.work-section { padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); background: var(--gl-surface-subtle); }
-.work-section.attention { border-left: 3px solid var(--gl-feedback-warning); }
-.work-section.active { border-left: 3px solid var(--gl-accent-purple); }
-.work-section.waiting { border-left: 3px solid var(--gl-feedback-info); }
-.work-list { display: grid; gap: var(--gl-spacing-8); }
+.work-section {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.work-section :deep(.gl-section-header) {
+  min-height: 28px;
+  padding: 0 var(--gl-spacing-4) var(--gl-spacing-4);
+  border-bottom: 1px solid var(--gl-border-subtle);
+}
+.work-section.attention :deep(.gl-section-title > .gl-icon) { color: var(--gl-feedback-warning); }
+.work-section.active :deep(.gl-section-title > .gl-icon) { color: var(--gl-accent-purple); }
+.work-section.waiting :deep(.gl-section-title > .gl-icon) { color: var(--gl-feedback-info); }
+.work-list { display: grid; gap: 1px; }
+.work-empty {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: var(--gl-spacing-8);
+  padding: var(--gl-spacing-8) var(--gl-spacing-4);
+  color: var(--gl-text-subtle);
+  font-size: 10px;
+}
+.work-empty > .gl-icon { color: var(--gl-text-subtle); }
 </style>

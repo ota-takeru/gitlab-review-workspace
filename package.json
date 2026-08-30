@@ -2,7 +2,7 @@
   "name": "gitlab-review-workspace",
   "displayName": "GitLab Review Workspace",
   "description": "GitLab merge request review experience with threaded comments, review diffs, and editable local review drafts.",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "publisher": "ota-takeru",
   "repository": {
     "type": "git",
@@ -203,6 +203,8 @@
     "build:storybook": "storybook build -o storybook-static",
     "test:storybook": "vitest run --project=storybook",
     "test:storybook:watch": "vitest --project=storybook",
+    "ui:capture": "node scripts/ui/capture.mjs",
+    "ui:verify": "npm run check && npm run test:storybook && npm run build:storybook && npm run ui:capture",
     "check": "tsc -p ./ --noEmit && vue-tsc --noEmit -p webview/tsconfig.json",
     "test": "npm run compile && node --test ./out/test/*.test.js"
   },

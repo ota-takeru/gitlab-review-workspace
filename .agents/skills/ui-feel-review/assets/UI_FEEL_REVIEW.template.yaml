@@ -1,0 +1,243 @@
+review:
+  surface: "<screen brief name>"
+  scope: "<primary task and tested states>"
+  reviewed_at: "<ISO-8601 date>"
+  primary_task: "<verb phrase>"
+  condition_summary:
+    provider: "<configured evidence adapter>"
+    story_or_url: "<story ID, route, native-host path, or evidence locator>"
+    fixture: "<fixture or data-state name; follow project data policy>"
+    viewport: "<viewport or host environment>"
+    theme: "<configured theme or display mode>"
+    starting_state: "<state>"
+
+policy:
+  status: "resolved | absent | invalid"
+  profile_path: "<absolute or repository-relative path, or null>"
+  schema_version: "<version or null>"
+  compatibility_mode: "preferred | legacy_v2 | generic_defaults"
+  fingerprint_sha256: "<fingerprint or null>"
+  adapters:
+    - "<configured evidence or host adapter>"
+  context_anchors:
+    - "<configured task identity>"
+  warnings: []
+
+evidence_coverage:
+  level: "complete | partial | insufficient"
+  rationale: "[fact/inference] <what was observed and why coverage has this level>"
+  essential_phases:
+    orient_predict: "observed | missing | fixture_blocked"
+    act: "observed | missing | fixture_blocked"
+    acknowledgement: "observed | missing | fixture_blocked"
+    pending: "observed | not_applicable | missing | fixture_blocked"
+    outcome: "observed | missing | fixture_blocked"
+    next_action_recovery: "observed | missing | fixture_blocked"
+  required_host_transitions:
+    - "<transition or none required>"
+  observed_host_transitions:
+    - "<observed transition>"
+  missing_host_transitions:
+    - "<missing or fixture-blocked transition, or none>"
+  repetitions:
+    required: 2
+    complete_cycles: "<count>"
+    partial_cycles: "<count>"
+
+product_feel:
+  overall_verdict: "smooth | minor_drag | rough | broken | not_assessable"
+  confidence: "high | medium | low"
+  evidence_ids: []
+  rationale: "[inference] <product-feel judgment only when coverage supports it; otherwise explain not_assessable>"
+
+facts:
+  - id: "E1-R1-ORIENT"
+    repetition: "R1"
+    phase: "orient_predict | act | acknowledgement | pending | outcome | next_action_recovery"
+    condition: "<story, fixture, viewport, theme, starting state>"
+    location: "<visible region or control>"
+    order: "<interaction order or measured timing; use not measured when unavailable>"
+    observation: "[fact] <directly visible or interactively observed event>"
+    artifact: "<screenshot path, URL, trace, or null>"
+
+inferences:
+  - id: "I1"
+    based_on: ["E1-R1-ORIENT"]
+    inference: "[inference] <what the evidence suggests about the task feel>"
+
+runs:
+  # Required: record both comparable repetitions (R1 and R2); classify partial or fixture-blocked cycles before assigning an overall verdict.
+  - id: "R1"
+    condition: "<same condition key as review.condition_summary>"
+    steps:
+      - phase: "orient_predict"
+        evidence_ids: ["E1-R1-ORIENT"]
+      - phase: "act"
+        evidence_ids: ["E2-R1-ACT"]
+      - phase: "acknowledgement"
+        evidence_ids: ["E3-R1-ACK"]
+      - phase: "pending"
+        status: "observed | not_observed | fixture_blocked"
+        evidence_ids: ["E4-R1-PENDING"]
+      - phase: "outcome"
+        evidence_ids: ["E5-R1-OUTCOME"]
+      - phase: "next_action_recovery"
+        evidence_ids: ["E6-R1-NEXT"]
+    coverage: "complete | partial | insufficient"
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    missing_phases: []
+    missing_host_transitions: []
+    evidence_ids: ["E1-R1-ORIENT", "E2-R1-ACT", "E3-R1-ACK", "E4-R1-PENDING", "E5-R1-OUTCOME", "E6-R1-NEXT"]
+  - id: "R2"
+    condition: "<same condition key as review.condition_summary>"
+    steps:
+      - phase: "orient_predict"
+        evidence_ids: ["E1-R2-ORIENT"]
+      - phase: "act"
+        evidence_ids: ["E2-R2-ACT"]
+      - phase: "acknowledgement"
+        evidence_ids: ["E3-R2-ACK"]
+      - phase: "pending"
+        status: "observed | not_observed | fixture_blocked"
+        evidence_ids: ["E4-R2-PENDING"]
+      - phase: "outcome"
+        evidence_ids: ["E5-R2-OUTCOME"]
+      - phase: "next_action_recovery"
+        evidence_ids: ["E6-R2-NEXT"]
+    coverage: "complete | partial | insufficient"
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    missing_phases: []
+    missing_host_transitions: []
+    evidence_ids: ["E1-R2-ORIENT", "E2-R2-ACT", "E3-R2-ACK", "E4-R2-PENDING", "E5-R2-OUTCOME", "E6-R2-NEXT"]
+
+action_result_linkage:
+  R1:
+    origin:
+      identity: "<visible control/item identity>"
+      task_relative_position: "<row/index or peer slot; viewport region>"
+      focus: "<visible focus indicator, DOM focus only, or none>"
+      scroll: "<scroll owner and task-relative position>"
+      surrounding_order_extent: "<visible peer count/order and extent>"
+    result:
+      identity: "<visible acknowledgement/result identity>"
+      task_relative_position: "<row/index or peer slot; viewport region>"
+      focus: "<visible focus indicator, DOM focus only, or none>"
+      scroll: "<scroll owner and task-relative position>"
+      surrounding_order_extent: "<visible peer count/order and extent>"
+    semantic_identity: "retained | replaced | unknown"
+    visual_correspondence: "retained | broken | unknown"
+    position_change: "<row/index or peer-slot/region before → after>"
+    peer_context_change: "<visible peer count/order disappearance, replacement, or none>"
+    intermediate_path: "observed | absent | not_measured | fixture_blocked"
+    retained_visible_anchor: "<independent visible stable feature, none, or unknown>"
+    focus_scroll: "<focus and scroll continuity>"
+    linkage_verdict: "connected | spatial_disconnect | unknown"
+    evidence_ids: []
+  R2:
+    origin:
+      identity: "<visible control/item identity>"
+      task_relative_position: "<row/index or peer slot; viewport region>"
+      focus: "<visible focus indicator, DOM focus only, or none>"
+      scroll: "<scroll owner and task-relative position>"
+      surrounding_order_extent: "<visible peer count/order and extent>"
+    result:
+      identity: "<visible acknowledgement/result identity>"
+      task_relative_position: "<row/index or peer slot; viewport region>"
+      focus: "<visible focus indicator, DOM focus only, or none>"
+      scroll: "<scroll owner and task-relative position>"
+      surrounding_order_extent: "<visible peer count/order and extent>"
+    semantic_identity: "retained | replaced | unknown"
+    visual_correspondence: "retained | broken | unknown"
+    position_change: "<row/index or peer-slot/region before → after>"
+    peer_context_change: "<visible peer count/order disappearance, replacement, or none>"
+    intermediate_path: "observed | absent | not_measured | fixture_blocked"
+    retained_visible_anchor: "<independent visible stable feature, none, or unknown>"
+    focus_scroll: "<focus and scroll continuity>"
+    linkage_verdict: "connected | spatial_disconnect | unknown"
+    evidence_ids: []
+
+friction:
+  - id: "F1"
+    type: "hesitation | attention_split | discontinuity | spatial_disconnect | surprise | pressure | rhythm_break | confidence_loss"
+    based_on: ["E1-R1-ORIENT"]
+    phase: "<phase>"
+    observation: "[fact] <triggering event; include slot/peer/path/anchor facts when spatial>"
+    impact: "[inference] <task, visual correspondence, continuity, or recovery impact>"
+    recurrence: "once | repeated | condition_specific"
+
+dimensions:
+  orientation:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  momentum:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  state_continuity:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  action_result_continuity:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <is visual correspondence retained through path, peer context, or an independent visible anchor, regardless of semantic identity?>"
+  visual_calm_attention_competition:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  control_confidence_recovery_confidence:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  rhythm_across_repetition:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  craft_coherence:
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed rationale>"
+  "<configured host-fit dimension ID; default host_fit>":
+    verdict: "smooth | minor_drag | rough | broken | not_assessable"
+    confidence: "high | medium | low"
+    evidence_ids: []
+    rationale: "[inference] <evidence-backed fit with configured host conventions, or why it is not assessable>"
+
+# Add zero, one, or at most two hypotheses that improve causal linkage, not motion quantity. Address observed slices only.
+hypotheses:
+  - id: "H1"
+    hypothesis: "<behavioral or structural causal-linkage hypothesis; no arbitrary pixel prescription>"
+    expected_effect: "<expected effect on named feel dimensions>"
+    tradeoff_risk: "<risk or tradeoff>"
+    same_condition_proof_plan: "<same story, fixture, viewport, theme, starting state, and repeated interaction sequence>"
+    evidence_ids: []
+
+ui_review_follow_up:
+  required: false
+  reasons:
+    - "<hard functional/accessibility gate and exact evidence, or leave empty>"
+
+human_check:
+  - prompt: "Did a human user recognize the next target without prompting?"
+    status: "unanswered"
+    answer: null
+  - prompt: "Where did a real user hesitate or lose confidence, if anywhere?"
+    status: "unanswered"
+    answer: null
+  - prompt: "Did the recovery path match the user’s expectation?"
+    status: "unanswered"
+    answer: null
+
+limitations:
+  - "<missing interaction, state, theme, viewport, timing, or human evidence>"

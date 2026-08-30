@@ -12,7 +12,7 @@ import {
   type NativeReviewSide
 } from "./nativeReviewUtils";
 import { ReviewStore } from "./reviewStore";
-import type { ReviewComment, ReviewFileView, ReviewThread } from "./reviewTypes";
+import type { ReviewComment, ReviewFileView, ReviewReaction, ReviewThread } from "./reviewTypes";
 
 const nativeCommentControllerId = "gitlabReview.nativeComments";
 const commentInputScheme = "comment";
@@ -60,6 +60,7 @@ class GitLabNativeComment implements vscode.Comment {
   contextValue?: string;
   label?: string;
   timestamp?: Date;
+  reactions?: vscode.CommentReaction[];
 
   constructor(
     readonly reviewCommentId: string,
@@ -76,6 +77,7 @@ class GitLabNativeComment implements vscode.Comment {
       : "gitlabReview.native.readonly";
     this.label = comment.pending ? "Sending…" : editedLabel(comment);
     this.timestamp = safeDate(comment.createdAt);
+    this.reactions = toNativeReactions(comment.reactions ?? []);
   }
 }
 
@@ -124,6 +126,7 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (document) => this.provideCommentingRanges(document)
     };
+    this.controller.reactionHandler = (comment, reaction) => this.toggleReaction(comment, reaction);
 
     this.disposables.push(
       this.controller,
@@ -576,6 +579,12 @@ export class NativeReviewEditor implements vscode.TextDocumentContentProvider, v
     return initial;
   }
 
+  private async toggleReaction(comment: vscode.Comment, reaction: vscode.CommentReaction): Promise<void> {
+    const binding = this.commentBindings.get(comment);
+    if (!binding) return;
+    await this.store.toggleCommentReaction(binding.reviewThreadId, binding.reviewCommentId, reaction.label);
+  }
+
   private async submitComment(reply: vscode.CommentReply): Promise<void> {
     await this.submitText(reply.thread, reply.text);
   }
@@ -777,6 +786,40 @@ function editedLabel(comment: ReviewComment): string | undefined {
   const created = Date.parse(comment.createdAt);
   const updated = Date.parse(comment.updatedAt);
   return Number.isFinite(created) && Number.isFinite(updated) && updated > created ? "edited" : undefined;
+}
+
+const nativeReactionEmoji: Readonly<Record<string, string>> = {
+  thumbsup: "👍",
+  thumbsdown: "👎",
+  smile: "😄",
+  tada: "🎉",
+  heart: "❤️",
+  rocket: "🚀",
+  eyes: "👀"
+};
+
+function toNativeReactions(reactions: readonly ReviewReaction[]): vscode.CommentReaction[] {
+  return reactions.map((reaction) => ({
+    label: reaction.name,
+    count: reaction.count,
+    iconPath: nativeReactionIcon(reaction.name),
+    authorHasReacted: Boolean(reaction.currentUserAwardId)
+  }));
+}
+
+function nativeReactionIcon(name: string): vscode.Uri {
+  const emoji = nativeReactionEmoji[name] ?? "❔";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><text x="8" y="13" font-size="13" text-anchor="middle">${escapeXml(emoji)}</text></svg>`;
+  return vscode.Uri.parse(`data:image/svg+xml,${encodeURIComponent(svg)}`);
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 function pastedImageFilename(mimeType: CommentImageMimeType): string {

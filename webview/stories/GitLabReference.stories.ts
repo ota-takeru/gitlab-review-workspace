@@ -239,19 +239,19 @@ const criticalUrls = [
 ];
 
 const meta = {
-  title: "References/GitLab",
+  title: "References/Official sources",
   render: () => ({
     setup() {
       return { sections, featureCount: expectedFeatureIds.length };
     },
     template: `
-      <main class="gitlab-reference" aria-labelledby="gitlab-reference-title">
+      <main class="gitlab-reference" aria-labelledby="gitlab-source-catalog-title">
         <header class="gitlab-reference__header">
           <p class="gitlab-reference__eyebrow">Design reference</p>
           <div class="gitlab-reference__title-row">
             <div>
-              <h1 id="gitlab-reference-title">GitLab reference</h1>
-              <p class="gitlab-reference__intro">拡張機能の全ユーザー向け機能を、GitLab のライブ UI、公式ドキュメント、Pajamas と比較するためのカタログです。</p>
+              <h1 id="gitlab-source-catalog-title">Official GitLab source catalog</h1>
+              <p class="gitlab-reference__intro">これは描画済みコンポーネントではなく、拡張機能の各機能に対応する GitLab Live UI、公式ドキュメント、Pajamas の参照リンク集です。視覚比較は Component comparisons を使用します。</p>
             </div>
             <p class="gitlab-reference__summary" aria-label="Coverage summary">{{ featureCount }} capabilities · {{ sections.length }} sections</p>
           </div>
@@ -286,7 +286,7 @@ type Story = StoryObj<typeof meta>;
 export const Overview: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "GitLab reference" })).toBeVisible();
+    await expect(canvas.getByRole("heading", { name: "Official GitLab source catalog" })).toBeVisible();
     await expect(canvas.getByLabelText("Coverage summary")).toBeVisible();
 
     for (const section of sections) {

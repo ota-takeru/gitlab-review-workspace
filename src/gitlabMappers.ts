@@ -2,6 +2,7 @@ import {
   MergeRequestState,
   CommitDiffFile,
   ReviewComment,
+  ReviewReaction,
   ReviewCommit,
   ReviewNotification,
   ReviewFile,
@@ -84,6 +85,7 @@ export interface GitLabDiscussionNote {
   author?: { id?: number | string; username?: string; name?: string; avatar_url?: string };
   created_at?: string;
   updated_at?: string;
+  award_emoji?: GitLabAwardEmoji[];
   system?: boolean;
   resolved?: boolean;
   position?: {
@@ -92,6 +94,12 @@ export interface GitLabDiscussionNote {
     new_line?: number | null;
     old_line?: number | null;
   };
+}
+
+export interface GitLabAwardEmoji {
+  id: number | string;
+  name: string;
+  user?: GitLabUserSummary;
 }
 
 export interface GitLabTodo {
@@ -369,6 +377,9 @@ export function inferLanguage(filePath: string): string {
 
 export function mapGitLabNote(note: GitLabDiscussionNote, currentUserId?: number | string): ReviewComment {
   const authorId = note.author?.id;
+  const mappedReactions = note.award_emoji
+    ? mapGitLabAwardEmoji(note.award_emoji, currentUserId)
+    : undefined;
   return {
     id: String(note.id),
     author: note.author?.username ?? note.author?.name ?? "GitLab user",
@@ -377,8 +388,39 @@ export function mapGitLabNote(note: GitLabDiscussionNote, currentUserId?: number
     body: note.body ?? "",
     createdAt: note.created_at ?? new Date(0).toISOString(),
     updatedAt: note.updated_at,
-    canEdit: currentUserId !== undefined && authorId !== undefined && String(currentUserId) === String(authorId)
+    canEdit: currentUserId !== undefined && authorId !== undefined && String(currentUserId) === String(authorId),
+    ...(mappedReactions ? { reactions: mappedReactions, reactionsLoaded: true } : {})
   };
+}
+
+export function mapGitLabAwardEmoji(
+  awards: readonly GitLabAwardEmoji[],
+  currentUserId?: number | string
+): ReviewReaction[] {
+  const grouped = new Map<string, ReviewReaction>();
+  for (const award of awards) {
+    const name = award.name.trim();
+    if (!name) continue;
+    const existing = grouped.get(name) ?? { name, count: 0, users: [] };
+    existing.count += 1;
+    if (award.user) {
+      existing.users.push({
+        id: award.user.id === undefined ? undefined : String(award.user.id),
+        username: nonEmpty(award.user.username),
+        name: nonEmpty(award.user.name) ?? nonEmpty(award.user.username) ?? "GitLab user",
+        avatarUrl: nonEmpty(award.user.avatar_url)
+      });
+    }
+    if (
+      currentUserId !== undefined
+      && award.user?.id !== undefined
+      && String(currentUserId) === String(award.user.id)
+    ) {
+      existing.currentUserAwardId = String(award.id);
+    }
+    grouped.set(name, existing);
+  }
+  return [...grouped.values()];
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

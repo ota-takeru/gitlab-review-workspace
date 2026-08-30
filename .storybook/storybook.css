@@ -25,4 +25,6 @@ body,
 
 .storybook-frame.sidebar-narrow { width: min(320px, 100%); min-height: 844px; }
 .storybook-frame.sidebar-typical { width: min(400px, 100%); min-height: 900px; }
+.storybook-frame.sidebar-surface { width: 100%; min-height: 100vh; }
 .storybook-frame.editor-compact { width: min(1024px, 100%); min-height: 768px; }
+.storybook-frame.editor-wide { width: 100%; min-height: 100vh; }

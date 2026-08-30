@@ -84,12 +84,14 @@ Required states:
 
 Constraints:
 - Follow docs/UI_DESIGN.md.
+- Follow docs/ui/project-profile.yaml and the relevant brief under docs/ui/screens/.
+- Follow docs/ui/visual-quality.md and inspect the generated design board.
 - Keep GitLab/Pajamas semantics and VS Code theme compatibility.
 - Reuse shared components and tokens.
 - Do not add decorative UI without a functional role.
 
-Before editing, audit the current state and state the design decision.
-After editing, verify light and dark themes at the relevant sizes from docs/UI_DESIGN.md and provide screenshots or a precise visual QA report.
+Before editing, use $ui-review for an independent screenshot-based review-only pass. Select no more than the top three evidence-backed issues.
+After editing, run npm run ui:capture under the same conditions, inspect the design board in compact/full-size and color/grayscale modes, verify light and dark themes at the relevant sizes, and report the before/after evidence.
 ```
 
 ## Protocol or state change
@@ -125,6 +127,44 @@ Focus on:
 Report findings by severity with exact file and line references. If there are no actionable findings, state that explicitly and list remaining validation risks.
 ```
 
+## UI review-only task
+
+```text
+Use $ui-review to evaluate the <Sidebar / review file / commit diff> without modifying files.
+
+Evidence:
+- <canonical Storybook story or npm run ui:capture case>
+- <current screenshots if supplied>
+
+Focus:
+- primary-task clarity and review-context continuity;
+- first-glance hierarchy, composition, typography, spacing rhythm, density, long content, and paired light/dark behavior;
+- pending, error, recovery, keyboard, focus, and WCAG 2.2 AA risks.
+
+Follow docs/ui/project-profile.yaml, docs/ui/visual-quality.md, and the relevant screen brief. Use the generated design board when available. Return the fixed YAML review structure, evidence for every issue, and at most three highest-leverage improvements.
+```
+
+## UI feel review-only task
+
+```text
+Use $ui-feel-review to evaluate the interaction feel of <primary task> without modifying product files.
+
+Condition:
+- Story or URL: <fixture-only Storybook story>
+- Viewport and theme: <exact condition>
+- Starting state: <state>
+
+Repeat the same task at least twice and trace orientation, action, acknowledgement, pending, outcome, and next action or recovery. Separate facts from inference, classify evidence coverage before product feel, and use not_assessable when a fixture or host transition is missing. Return at most two causal hypotheses and leave all three human-check answers unanswered.
+```
+
+## UI feel iteration task
+
+```text
+Use $ui-feel-iterate to implement the one supported hypothesis from <ui-feel-review report> after a clear assent to the immediately preceding recommendation (for example, “その方針で”, “進めて”, or “お願いします”). When exactly one supported hypothesis and scope are unambiguous, do not require literal hypothesis-ID repetition or a second confirmation.
+
+Reproduce the report's exact baseline before editing. Implement only that causal hypothesis, preserve shared tokens/components and recovery behavior, update the nearest workflow story when required, and recapture the same task condition. Report objective before/after evidence and validation, but do not claim the feel improved until a fresh independent $ui-feel-review confirms it.
+```
+
 ## Useful attachments
 
 - Current VS Code screenshot including surrounding editor chrome
@@ -133,4 +173,3 @@ Report findings by severity with exact file and line references. If there are no
 - Exact MR/file/thread state needed to reproduce the issue
 - Console output or error text
 - A sample with realistic long paths and comments
-

@@ -27,6 +27,16 @@ function open(): void {
   if (props.kind === "changed") emit("openChanged", props.node.path);
   else if (props.branch) emit("openBranch", props.branch, props.node.path);
 }
+function fileActionLabel(): string {
+  return props.kind === "changed"
+    ? "Open diff"
+    : "Open file";
+}
+function fileAccessibleName(): string {
+  return props.kind === "changed"
+    ? `Open changed file ${props.node.path} in diff`
+    : `Open ${props.node.path} from ${props.branch || "branch"}`;
+}
 function forwardBranch(branch: string, path: string): void { emit("openBranch", branch, path); }
 function syncExpanded(event: Event): void {
   expanded.value = (event.currentTarget as HTMLDetailsElement).open;
@@ -61,6 +71,7 @@ function syncExpanded(event: Event): void {
     :class="{ 'active-file': kind === 'changed' && node.path === activeFilePath }"
     type="button"
     :aria-current="kind === 'changed' && node.path === activeFilePath ? 'true' : undefined"
+    :aria-label="fileAccessibleName()"
     :title="node.path"
     @click="open"
   >
@@ -76,6 +87,10 @@ function syncExpanded(event: Event): void {
       <GlIcon v-if="node.file.viewed" class="viewed-mark" name="check-circle" :size="12" label="Viewed" />
       <span v-else class="unviewed-mark" role="img" aria-label="Unviewed" title="Unviewed" />
       <GlIcon v-if="node.file.hasLocalEdit" class="local-edit-mark" name="pencil" :size="12" label="Local edit available" />
+    </span>
+    <span class="tree-file-action" aria-hidden="true">
+      <span class="tree-file-action-label">{{ fileActionLabel() }}</span>
+      <GlIcon name="external-link" :size="12" />
     </span>
   </button>
 </template>
@@ -95,10 +110,11 @@ function syncExpanded(event: Event): void {
 }
 .tree-directory > summary { padding: 0 var(--gl-spacing-4); cursor: pointer; list-style: none; font-weight: 600; }
 .tree-directory > summary::-webkit-details-marker { display:none; }
-.directory-chevron { color: var(--gl-text-subtle); transition: transform .12s; }
+.directory-chevron { color: var(--gl-text-subtle); transition: transform var(--gl-motion-duration-fast) var(--gl-motion-ease-standard); }
 .tree-directory[open] > summary > .directory-chevron { transform: rotate(90deg); }
 .directory-icon { color: var(--gl-text-subtle); }
 .tree-directory > summary:hover, .tree-file:hover { color:var(--gl-hover-text); background:var(--gl-hover-surface); }
+.tree-directory > summary:focus-visible, .tree-file:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .tree-file { padding: 0 var(--gl-spacing-4) 0 21px; background: transparent; cursor: pointer; }
 .tree-name { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .directory-count { min-width: 16px; color: var(--gl-text-subtle); font: 10px var(--vscode-font-family); text-align: right; }
@@ -115,6 +131,12 @@ function syncExpanded(event: Event): void {
 .viewed-mark { color: var(--gl-feedback-success); }
 .unviewed-mark { width: 6px; height: 6px; flex: none; border: 1px solid var(--gl-text-subtle); border-radius: 50%; }
 .local-edit-mark { color:var(--gl-local-accent); }
+.tree-file-action { flex: none; display: inline-flex; align-items: center; gap: 2px; color: var(--gl-text-subtle); font-size: 10px; font-weight: 600; white-space: nowrap; }
+.tree-file:hover .tree-file-action, .tree-file:focus-visible .tree-file-action, .active-file .tree-file-action { color: var(--gl-changed-accent); }
+
+@media (max-width: 360px) {
+  .tree-file-action-label { display: none; }
+}
 
 @media (forced-colors: active) {
   .active-file { border: 1px solid Highlight; box-shadow: none; }

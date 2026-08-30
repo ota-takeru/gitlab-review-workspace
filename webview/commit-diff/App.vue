@@ -5,6 +5,7 @@ import type { CommitFileDiffLine, CommitPatchLine } from "../../src/commitDiffUt
 import { buildSideBySideRows } from "../../src/diffUtils";
 import type { CommitDiffStatus } from "../../src/reviewTypes";
 import type { CommitDiffMessage, CommitDiffViewState, HostMessage, ReadyMessage } from "../../src/webviewProtocol";
+import GlButton from "../common/components/GlButton.vue";
 import GlDiffHeader from "../common/components/GlDiffHeader.vue";
 import GlDiffSideBySideTable, { type GlDiffSideLine } from "../common/components/GlDiffSideBySideTable.vue";
 import GlDiffScopeToggle, { type GlDiffScope } from "../common/components/GlDiffScopeToggle.vue";
@@ -173,7 +174,6 @@ onBeforeUnmount(() => {
           @update:model-value="setScope"
         />
         <span v-if="state.fullFileLoading" class="scope-status" role="status">Loading entire file…</span>
-        <button v-else-if="state.fullFileError" class="scope-retry" type="button" @click="setScope('file')">Reload full file</button>
       </div>
 
       <div v-if="emptyState" role="status">
@@ -190,13 +190,19 @@ onBeforeUnmount(() => {
           icon="warning"
           title="Entire file unavailable"
           :description="state.fullFileError"
-        />
+        >
+          <template #actions>
+            <GlButton size="small" @click="setScope('changes')">Show changed lines</GlButton>
+            <GlButton size="small" variant="confirm" @click="setScope('file')">Retry entire file</GlButton>
+          </template>
+        </GlEmptyState>
         <p v-else>Loading entire file…</p>
       </div>
 
       <GlDiffSideBySideTable
         v-else
         :rows="sideBySideLines"
+        :file-path="state.file.path"
         left-label="Before"
         right-label="After"
         aria-label="Commit file diff"
@@ -208,17 +214,13 @@ onBeforeUnmount(() => {
 <style scoped>
 .commit-diff-app {
   min-height: 100vh;
-  padding: var(--gl-spacing-16);
   color: var(--vscode-editor-foreground);
   background: var(--gl-surface-default);
 }
 
 .diff-card {
   min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--gl-border-default);
-  border-radius: var(--gl-radius-md);
-  background: var(--gl-surface-raised);
+  background: var(--vscode-editor-background);
 }
 
 .commit-meta {
@@ -266,16 +268,8 @@ onBeforeUnmount(() => {
 
 .scope-label { flex: none; }
 .scope-status { color: var(--gl-text-subtle); }
-.scope-retry {
-  padding: var(--gl-spacing-2) var(--gl-spacing-4);
-  border: 0;
-  color: var(--gl-text-link);
-  background: transparent;
-  cursor: pointer;
-}
-.scope-retry:hover { background: var(--gl-hover-surface); }
-.full-file-status { padding: var(--gl-spacing-24); }
-.full-file-status p { margin: 0; color: var(--gl-text-subtle); text-align: center; }
+.full-file-status { border-bottom: 1px solid var(--gl-border-subtle); }
+.full-file-status p { min-height: 160px; display: grid; place-items: center; margin: 0; color: var(--gl-text-subtle); text-align: center; }
 
 .visually-hidden {
   position: absolute;
@@ -288,15 +282,4 @@ onBeforeUnmount(() => {
   border: 0;
 }
 
-@media (max-width: 560px) {
-  .commit-diff-app {
-    padding: 0;
-  }
-
-  .diff-card {
-    border-right: 0;
-    border-left: 0;
-    border-radius: 0;
-  }
-}
 </style>

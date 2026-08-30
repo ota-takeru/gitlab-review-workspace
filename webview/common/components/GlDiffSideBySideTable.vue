@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DiffSideBySideRow } from "../../../src/diffUtils";
+import GlHighlightedCode from "./GlHighlightedCode.vue";
 
 export interface GlDiffSideLine<TData = unknown> {
   kind: string;
@@ -12,6 +13,8 @@ const props = defineProps<{
   rows: DiffSideBySideRow<GlDiffSideLine>[];
   leftLabel?: string;
   rightLabel?: string;
+  language?: string;
+  filePath?: string;
   ariaLabel?: string;
   "aria-label"?: string;
 }>();
@@ -55,7 +58,12 @@ function codeFor(line?: GlDiffSideLine): string {
           >
             <span class="gl-diff-side-by-side-line-number">{{ side?.line ?? '' }}</span>
             <span class="gl-diff-side-by-side-marker" aria-hidden="true">{{ markerFor(side) }}</span>
-            <code class="gl-diff-side-by-side-code">{{ codeFor(side) || ' ' }}</code>
+            <GlHighlightedCode
+              class="gl-diff-side-by-side-code"
+              :code="codeFor(side) || ' '"
+              :language="props.language"
+              :file-path="props.filePath"
+            />
           </div>
         </div>
       </slot>

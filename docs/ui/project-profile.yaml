@@ -1,0 +1,237 @@
+schema_version: 1
+
+project:
+  name: GitLab Review Workspace
+  category: VS Code merge request review tool
+  promise: Keep review context, decisions, and recovery paths visible without leaving the editor.
+  platform_sources:
+    - VS Code workbench and theme semantics
+    - GitLab review concepts and Pajamas interaction patterns
+  system_reference: Material Design foundations inform token, hierarchy, and state discipline only.
+
+contracts:
+  read:
+    - README.md
+    - docs/DEVELOPMENT.md
+    - docs/UI_DESIGN.md
+    - docs/ui/visual-quality.md
+    - docs/STORYBOOK.md
+  visual_quality: docs/ui/visual-quality.md
+  surface_briefs: docs/ui/screens/*.md
+
+adapters:
+  storybook:
+    type: evidence
+    provider: storybook
+    runtime: browser
+  playwright:
+    type: evidence
+    provider: playwright
+    runtime: browser
+  vscode_webview:
+    type: host
+    host: VS Code
+    runtime: Webview
+  vscode_extension_host:
+    type: host
+    host: VS Code
+    runtime: Extension Development Host
+
+domain:
+  context_anchors:
+    - merge_request
+    - file
+    - line
+    - discussion
+    - scope
+    - selection
+    - draft
+    - local_vs_merge_request_meaning
+  reference_systems:
+    - name: VS Code
+      traits:
+        - workbench density
+        - semantic theming
+        - editor typography
+        - selection and focus behavior
+        - compact section navigation
+        - restrained surfaces
+    - name: GitLab/Pajamas
+      traits:
+        - merge request vocabulary
+        - discussion and resolution hierarchy
+        - diff and status meaning
+        - changed-file structure
+        - predictable review actions
+  report_keys:
+    host_fit_dimension: vscode_host_fit
+
+user:
+  primary: A developer reviewing a GitLab merge request while coding in VS Code.
+  situation:
+    - Switching repeatedly between changed files, discussions, commits, and local edits.
+    - Working in a narrow Sidebar or a split editor with long technical content.
+    - Needing to distinguish remote review state from local and pending work.
+  needs:
+    - Find the next unresolved or unviewed item quickly.
+    - Preserve file and discussion context across navigation.
+    - Trust that asynchronous actions are pending, completed, failed, or recoverable.
+
+direction:
+  qualities:
+    - calm
+    - dense_without_pressure
+    - precise
+    - predictable
+    - integrated_with_the_host
+  principles:
+    - Put review context and the next useful action ahead of decoration.
+    - Keep related controls close and separate different review groups clearly.
+    - Prefer visible state and recognition over memory.
+    - Keep current content available during refreshes and mutations when possible.
+
+anti_direction:
+  - Do not turn every section into a rounded card.
+  - Do not use gradients or shadows without a functional surface relationship.
+  - Do not add oversized headings or low-density marketing layouts.
+  - Do not introduce one-off colors, spacing, radii, or component variants.
+  - Do not encode state with color alone.
+  - Do not imitate GitLab pixels when that conflicts with VS Code behavior or density.
+
+interaction:
+  priorities:
+    - Keep the active file, selected discussion, and visible diff consistent.
+    - Show immediate acknowledgement, pending state, result, and next action for mutations.
+    - Prevent duplicate submission while retaining drafts after recoverable failures.
+    - Keep keyboard focus visible and return focus predictably after overlays or cancellation.
+    - Provide a clear recovery action for failed loading, saving, posting, and resolution.
+    - Preserve visible correspondence from an action origin to its acknowledgement and result.
+  destructive_actions:
+    - Label the consequence explicitly.
+    - Keep destructive actions visually subordinate to the primary review task.
+    - Require confirmation or an obvious recovery path when loss is material.
+
+visual:
+  quality_contract: docs/ui/visual-quality.md
+  density: Dense professional developer tooling, optimized for scanning rather than browsing.
+  hierarchy: Use spacing, alignment, typography, and restrained contrast before borders or containers.
+  token_source: webview/common/theme.css
+  spacing_tokens:
+    gl_spacing_2: 2
+    gl_spacing_4: 4
+    gl_spacing_8: 8
+    gl_spacing_12: 12
+    gl_spacing_16: 16
+    gl_spacing_24: 24
+    gl_spacing_32: 32
+  radius_tokens:
+    gl_radius_sm: 3
+    gl_radius_md: 6
+  shadows: Use only for genuinely floating overlays.
+  typography_levels: 4
+  accent_strategy: One primary action/focus family; semantic colors remain role-specific.
+  minimum_sizes:
+    sidebar: 320x844
+    editor_compact: 1024x768
+    editor_wide: 1440x900
+
+evidence:
+  data_policy: fixture_only
+  output_root: output/playwright
+  capture:
+    argv: [npm, run, ui:capture, --]
+    case_argument: --case
+  manifest_name: manifest.json
+  review_board_name: review-board.html
+  lanes: [canonical, constrained, pressure]
+  themes: [light, dark]
+  viewports:
+    sidebar_narrow: 320x844
+    sidebar_typical: 400x900
+    editor_compact: 1024x768
+    editor_wide: 1440x900
+  required_states: [ready, loading, empty, error, pending, disabled, constrained, long_content, high_density]
+  minimum_repetitions: 2
+
+evaluation:
+  score_range: [0, 4]
+  axes:
+    - id: primary_task_clarity
+      weight: 15
+      criterion: Whether the next meaningful review action and its result are obvious.
+    - id: review_context_continuity
+      weight: 15
+      criterion: Whether MR, file, line, thread, scope, and selection remain connected.
+    - id: workflow_efficiency
+      weight: 10
+      criterion: Scan cost, navigation cost, interruption, and repeated effort.
+    - id: state_feedback_and_recovery
+      weight: 10
+      criterion: Acknowledgement, pending, success, failure, retry, undo, and draft retention.
+    - id: visual_hierarchy_and_composition
+      weight: 15
+      criterion: Focal order, scan path, grouping, alignment, balance, and competing emphasis.
+    - id: typography_spacing_and_density
+      weight: 10
+      criterion: Text-role clarity, technical-text treatment, proximity rhythm, and pressure at constrained sizes.
+    - id: color_surface_and_component_coherence
+      weight: 10
+      criterion: Semantic color, border/surface economy, theme parity, consistent components, and affordances.
+    - id: keyboard_and_accessibility
+      weight: 10
+      criterion: Keyboard completion, focus, names, contrast, non-color meaning, and announcements.
+    - id: gitlab_and_vscode_fit
+      weight: 5
+      criterion: GitLab review semantics combined with VS Code host behavior and density.
+  hard_gates:
+    - id: keyboard_completion
+      fail_when: A primary task cannot be completed with a keyboard.
+    - id: visible_focus
+      fail_when: Keyboard focus is missing, obscured, or indistinguishable.
+    - id: non_color_state
+      fail_when: Meaning or status is communicated by color alone.
+    - id: destructive_recovery
+      fail_when: A destructive action can cause material loss without confirmation or recovery.
+    - id: required_state_evidence
+      fail_when: Required loading, empty, error, pending, or constrained evidence is absent.
+    - id: credential_safety
+      fail_when: A fixture, screenshot, log, or manifest contains credentials or real private data.
+  iteration:
+    maximum_issues_to_fix: 3
+    priority_factors:
+      - user_impact
+      - occurrence_frequency
+      - evidence_confidence
+      - implementation_risk
+    require_same_condition_before_after: true
+
+implementation:
+  source_roots: [src, webview]
+  generated_paths: [out, media/webview]
+  shared_ui_sources:
+    - webview/common/components
+  token_sources:
+    - webview/common/theme.css
+  protocol_contracts:
+    - src/webviewProtocol.ts
+  dependency_policy: Production dependencies require explicit user approval.
+  boundary_rules:
+    - Keep Host/Webview messages typed.
+    - Do not send HTML fragments or credentials through messages.
+    - Use fixture-only typed synthetic data for stories and captures.
+    - Preserve unrelated dirty changes.
+
+validation:
+  commands:
+    - id: check
+      condition: TypeScript or Vue source changed.
+      argv: [npm, run, check]
+    - id: storybook_test
+      condition: A story or rendered UI changed.
+      argv: [npm, run, test:storybook]
+    - id: storybook_build
+      condition: A story or rendered UI changed.
+      argv: [npm, run, build:storybook]
+    - id: full_test
+      condition: Source behavior changed before completion.
+      argv: [npm, test]

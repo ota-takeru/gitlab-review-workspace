@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Feel Iterate"
+  short_description: "Implement one evidenced UI feel hypothesis safely"
+  default_prompt: "Use $ui-feel-iterate to implement one authorized evidence-backed feel hypothesis under the project profile and hand it to an independent review."

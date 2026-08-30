@@ -13,13 +13,10 @@
         "cwd": "${workspaceFolder}"
       },
       "windows": {
-        "command": "wsl.exe",
+        "command": "npm.cmd",
         "args": [
-          "bash",
-          "-lc",
-          "cd \"$(wslpath -u \"$1\")\" && npm run compile",
-          "--",
-          "${workspaceFolder}"
+          "run",
+          "compile"
         ]
       },
       "problemMatcher": [

@@ -95,6 +95,8 @@ export type SidebarMessage =
   | { type: "openCommitFile"; commitId: string; filePath: string }
   | { type: "openNewChangesFile"; filePath: string }
   | { type: "addComment"; threadId: string; body: string }
+  | { type: "loadCommentReactions"; threadId: string; commentId: string }
+  | { type: "toggleCommentReaction"; threadId: string; commentId: string; name: string }
   | { type: "addOverviewThread"; body: string; mode: ReviewSubmissionMode }
   | { type: "setSubmissionMode"; mode: ReviewSubmissionMode }
   | { type: "publishReviewDraft"; draftId: string }
@@ -130,6 +132,8 @@ export type ReviewFileMessage =
   | { type: "saveLocalEdit"; requestId: string; text: string }
   | { type: "clearLocalEdit" }
   | { type: "addComment"; threadId: string; body: string }
+  | { type: "loadCommentReactions"; threadId: string; commentId: string }
+  | { type: "toggleCommentReaction"; threadId: string; commentId: string; name: string }
   | { type: "editComment"; threadId: string; commentId: string; body: string }
   | { type: "toggleResolved"; threadId: string }
   | { type: "addThread"; body: string; mrLine: number; oldLine?: number; mode?: ReviewSubmissionMode }

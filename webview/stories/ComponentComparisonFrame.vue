@@ -46,9 +46,12 @@ defineProps<{
 
       <section class="comparison-pane reference-pane" aria-labelledby="gitlab-reference-title">
         <header>
-          <p>Official comparison target</p>
-          <h2 id="gitlab-reference-title">GitLab / Pajamas</h2>
+          <p>Rendered from the official specification</p>
+          <h2 id="gitlab-reference-title">GitLab / Pajamas specimen</h2>
         </header>
+        <div class="reference-specimen-stage" aria-label="Rendered GitLab/Pajamas specimen">
+          <slot name="gitlab-reference" />
+        </div>
         <p class="reference-summary">{{ referenceSummary }}</p>
         <div class="reference-links" aria-label="Official component references">
           <a v-for="reference in references" :key="reference.href" :href="reference.href" target="_blank" rel="noopener noreferrer">
@@ -93,12 +96,13 @@ h1 { margin: 0; font-size: 22px; line-height: 1.3; }
 .component-map strong { color: var(--gl-accent-orange); background: color-mix(in srgb, var(--gl-accent-orange) 9%, var(--gl-surface-raised)); }
 .map-side { border-color: transparent; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); }
 .map-arrow { color: var(--vscode-descriptionForeground); }
-.comparison-columns { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, .65fr); gap: var(--gl-spacing-12); }
+.comparison-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gl-spacing-12); }
 .comparison-pane { min-width: 0; border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); background: var(--gl-surface-raised); }
 .comparison-pane > header { padding: var(--gl-spacing-12); border-bottom: 1px solid var(--gl-border-default); }
 .comparison-pane h2 { margin: 0; font-size: 13px; }
 .specimen-stage { min-width: 0; min-height: 220px; display: grid; align-content: center; padding: var(--gl-spacing-16); overflow: auto; background: var(--gl-surface-default); }
 .reference-pane { border-left: 3px solid var(--gl-accent-orange); }
+.reference-specimen-stage { min-width: 0; min-height: 220px; display: grid; align-content: center; overflow: auto; color-scheme: inherit; background: light-dark(#ffffff, #17161b); }
 .reference-summary { margin: 0; padding: var(--gl-spacing-16); color: var(--vscode-foreground); font-size: 12px; line-height: 1.55; }
 .reference-links { display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4); padding: 0 var(--gl-spacing-16) var(--gl-spacing-16); }
 .reference-links a { border-radius: var(--gl-radius-sm); padding: 3px 6px; color: var(--vscode-textLink-foreground, #428fdc); background: var(--gl-surface-subtle); font-size: 11px; font-weight: 600; text-decoration: none; }

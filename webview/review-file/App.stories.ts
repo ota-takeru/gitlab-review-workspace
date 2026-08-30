@@ -17,14 +17,26 @@ const thread = {
       author: "Reviewer One",
       authorId: "reviewer-1",
       body: "Could we make this branch easier to follow?",
-      createdAt: "2026-01-01T00:00:00.000Z"
+      createdAt: "2026-01-01T00:00:00.000Z",
+      reactionsLoaded: true,
+      reactions: [
+        {
+          name: "thumbsup",
+          count: 2,
+          currentUserAwardId: "award-1",
+          users: [{ id: "me", name: "You" }, { id: "reviewer-1", name: "Reviewer One" }]
+        },
+        { name: "party_parrot", count: 1, users: [{ id: "reviewer-2", name: "Reviewer Two" }] }
+      ]
     },
     {
       id: "comment-2",
       author: "Reviewer Two",
       authorId: "reviewer-2",
       body: "I agree with this suggestion.",
-      createdAt: "2026-01-01T00:01:00.000Z"
+      createdAt: "2026-01-01T00:01:00.000Z",
+      reactionsLoaded: true,
+      reactions: []
     }
   ]
 };
@@ -176,6 +188,84 @@ const largeWindowState: ReviewFileViewState = {
   }
 };
 
+const emptyDiffState: ReviewFileViewState = {
+  ...state,
+  viewModel: {
+    ...state.viewModel!,
+    lines: [],
+    threads: [],
+    fullFileState: "loaded",
+    lineWindow: { start: 0, end: 0, total: 0, hasPrevious: false, hasNext: false }
+  }
+};
+
+const fullFileLoadingState: ReviewFileViewState = {
+  ...state,
+  viewModel: {
+    ...state.viewModel!,
+    fullFileState: "loading",
+    fullFileMessage: "Loading the full file…"
+  }
+};
+
+const fullFileErrorState: ReviewFileViewState = {
+  ...state,
+  viewModel: {
+    ...state.viewModel!,
+    fullFileState: "error",
+    fullFileMessage: "The full file could not be loaded. The changed-lines patch remains available."
+  }
+};
+
+const unavailableState: ReviewFileViewState = { ...state, viewModel: undefined };
+
+const tooLargeState: ReviewFileViewState = {
+  ...emptyDiffState,
+  viewModel: {
+    ...emptyDiffState.viewModel!,
+    file: { ...emptyDiffState.viewModel!.file, tooLarge: true },
+    fullFileState: "too-large",
+    fullFileMessage: "GitLab omitted this patch because the file is too large."
+  }
+};
+
+const compactPath = "packages/review-workspace/src/generated/integrations/gitlab/discussions/ReviewDiscussionNavigationController.ts";
+const compactPendingThread = {
+  ...thread,
+  filePath: compactPath,
+  pending: true,
+  comments: [{
+    ...thread.comments[0]!,
+    id: "comment-pending-1",
+    body: "Keep this pending review note attached to the selected line even when the editor is compact and the file path is unusually long.",
+    pending: true
+  }]
+};
+const compactPendingDiscussionState: ReviewFileViewState = {
+  ...sideBySideState,
+  filePath: compactPath,
+  targetThreadId: compactPendingThread.id,
+  submissionMode: "review",
+  viewModel: {
+    ...sideBySideState.viewModel!,
+    file: {
+      ...sideBySideState.viewModel!.file,
+      path: compactPath,
+      oldPath: compactPath,
+      newPath: compactPath
+    },
+    summary: {
+      ...sideBySideState.viewModel!.summary,
+      path: compactPath
+    },
+    threads: [compactPendingThread],
+    lines: sideBySideState.viewModel!.lines.map((line) => ({
+      ...line,
+      threadIds: line.kind === "mr-added" ? [compactPendingThread.id] : []
+    }))
+  }
+};
+
 function renderState(nextState: ReviewFileViewState) {
   return {
     components: { ReviewFileApp: App },
@@ -200,6 +290,48 @@ const meta = {
 
 export default meta;
 type Story = StoryObj<typeof meta>;
+
+export const ReadyOpenDiscussion: Story = {
+  render: () => renderState(state),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("button", { name: "Collapse discussion on line 10" })).toBeVisible();
+    await expect(canvas.getByText("Could we make this branch easier to follow?")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Resolve discussion" })).toBeVisible();
+    await expect(canvasElement.querySelector('[data-syntax-language="typescript"] [data-token-kind="keyword"]')).toHaveTextContent("const");
+    await expect(canvas.getByText(":party_parrot:")).toBeVisible();
+    const storyWindow = canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] };
+    const messages = storyWindow.__storybookVsCodeMessages ?? [];
+    const messageCount = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Remove thumbsup reaction, 2" }));
+    await expect(messages.slice(messageCount)).toContainEqual({
+      type: "toggleCommentReaction",
+      threadId: "discussion-1",
+      commentId: "comment-1",
+      name: "thumbsup"
+    });
+    const addButtons = canvas.getAllByRole("button", { name: "Add reaction" });
+    const addMessageCount = messages.length;
+    await userEvent.click(addButtons[0]!);
+    await userEvent.click(canvas.getByRole("button", { name: "Rocket" }));
+    await expect(messages.slice(addMessageCount)).toContainEqual({
+      type: "toggleCommentReaction",
+      threadId: "discussion-1",
+      commentId: "comment-1",
+      name: "rocket"
+    });
+  }
+};
+
+export const CompactPendingDiscussion: Story = {
+  render: () => renderState(compactPendingDiscussionState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Sending…")).toBeVisible();
+    await expect(canvas.getByTitle(compactPath)).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Updating discussion status" })).toBeDisabled();
+  }
+};
 
 export const MultipleReplyAuthors: Story = {
   render: () => renderState(state),
@@ -227,8 +359,8 @@ export const SideBySideDiff: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Before")).toBeVisible();
     await expect(canvas.getByText("Merge request")).toBeVisible();
-    await expect(canvas.getByText("const answer = 41;")).toBeVisible();
-    await expect(canvas.getByText("const answer = 42;")).toBeVisible();
+    await expect(codeLine(canvasElement, "const answer = 41;")).toBeVisible();
+    await expect(codeLine(canvasElement, "const answer = 42;")).toBeVisible();
   }
 };
 
@@ -306,7 +438,70 @@ export const LargeFileWindow: Story = {
   render: () => renderState(largeWindowState),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("1–1200 / 50000")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Next lines" })).toBeVisible();
+    await expect(canvas.getAllByText("1–1200 / 50000")).toHaveLength(2);
+    await expect(canvas.getAllByRole("button", { name: "Next lines" })).toHaveLength(2);
+    await expect(canvas.getAllByRole("button", { name: "Previous lines" })).toHaveLength(2);
+    await expect(canvas.getByText("Other lines are omitted from this window.")).toBeVisible();
+  }
+};
+
+function codeLine(canvasElement: HTMLElement, text: string): Element | null {
+  return Array.from(canvasElement.querySelectorAll("[data-syntax-language]"))
+    .find((element) => element.textContent === text) ?? null;
+}
+
+export const FullFileLoading: Story = {
+  render: () => renderState(fullFileLoadingState),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("Loading full file…")).toBeVisible();
+  }
+};
+
+export const FullFileError: Story = {
+  render: () => renderState(fullFileErrorState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("The full file could not be loaded. The changed-lines patch remains available.")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Load full file" })).toBeVisible();
+  }
+};
+
+export const FileUnavailable: Story = {
+  render: () => renderState(unavailableState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("File unavailable")).toBeVisible();
+    await expect(canvas.getByText("src/review.ts was not found in this merge request.")).toBeVisible();
+  }
+};
+
+export const EmptyDiff: Story = {
+  render: () => renderState(emptyDiffState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("No displayable changes")).toBeVisible();
+    await expect(canvas.getByText("GitLab returned no displayable patch for this file.")).toBeVisible();
+  }
+};
+
+export const TooLargeOrUnsupported: Story = {
+  render: () => renderState(tooLargeState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Diff too large to display")).toBeVisible();
+    await expect(canvas.getAllByText("GitLab omitted this patch because the file is too large.")).toHaveLength(1);
+  }
+};
+
+export const EditSavingPending: Story = {
+  render: () => renderState(editState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "File contents" });
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "const answer = 44;");
+    await userEvent.click(canvas.getByRole("button", { name: "Save local changes" }));
+    await expect(editor).toHaveAttribute("readonly");
+    await expect(canvas.getByText("Saving local draft…")).toBeVisible();
   }
 };

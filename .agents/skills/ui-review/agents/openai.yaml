@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Review"
+  short_description: "Review rendered UI with project-aware evidence"
+  default_prompt: "Use $ui-review to evaluate this rendered UI independently against its project profile and rank evidence-backed improvements."

@@ -68,6 +68,12 @@ export class MyWorkStore implements vscode.Disposable {
     const sourceUpdate = applyMyWorkSourceResults(this.sourceCache, results);
     await Promise.all(sourceUpdate.updatedSources.map((source) => this.persist(`${CACHE_PREFIX}${source}`, this.sourceCache[source])));
 
+    // Primary work is useful as soon as the four source requests finish. Keep
+    // candidate discovery inside this refresh, but do not make the first
+    // usable My Work state wait for the comparatively expensive fork scan.
+    this.state = toState("loading", allCachedItems(this.sourceCache, this.candidateCache), [], this.state.lastSuccessfulAt);
+    if (!this.disposed) this.onDidChangeEmitter.fire();
+
     const candidateResult = await candidateRequest;
     if (candidateResult.ok) {
       this.candidateCache = candidateResult.value;

@@ -91,6 +91,8 @@ VS Codeでこのフォルダを開き、`Run and Debug`から`Run Extension`を�
 | `npm run storybook -- --no-open` | UI状態カタログを`localhost:6006`で起動 |
 | `npm run test:storybook` | Chromiumでstory・interaction・a11yテストを実行 |
 | `npm run build:storybook` | Storybookのproduction build |
+| `npm run ui:capture` | 固定Storybook状態を撮影し、light/dark比較用デザインボードを生成 |
+| `npm run ui:verify` | 型、Storybook、a11y、production build、UI撮影を一括検証 |
 | `npm run clean` | `out/`を削除 |
 
 `out/`と`media/webview/`のJavaScript/CSSは生成物です。直接編集せず、`src/`または`webview/`を変更して再ビルドしてください。
@@ -143,11 +145,14 @@ HostとWebview間では`src/webviewProtocol.ts`の型付きメッセージのみ
 
 リポジトリ直下の[`AGENTS.md`](./AGENTS.md)は、新規Codexチャットで自動的に読み込まれる永続ガイダンスです。タスク固有の目的、再現手順、制約、完了条件だけを新しいチャットで追加してください。
 
-依頼文の例は[`docs/CODEX_TASKS.md`](./docs/CODEX_TASKS.md)にあります。UI変更ではスクリーンショットと対象状態を添付し、実装前後のlight/dark比較を依頼するのが推奨です。
+依頼文の例は[`docs/CODEX_TASKS.md`](./docs/CODEX_TASKS.md)にあります。UI変更では[`docs/ui/project-profile.yaml`](./docs/ui/project-profile.yaml)、[`docs/ui/visual-quality.md`](./docs/ui/visual-quality.md)、該当する[画面ブリーフ](./docs/ui/screens/)を読み、`$ui-review`による変更前の独立評価、上位3件までの修正、`npm run ui:capture`が生成するデザインボードでの同条件比較を依頼してください。
 
 ## 詳細ドキュメント
 
 - [開発・検証ガイド](./docs/DEVELOPMENT.md)
 - [UIデザイン契約](./docs/UI_DESIGN.md)
+- [プロジェクトUIプロファイル](./docs/ui/project-profile.yaml)
+- [視覚品質契約](./docs/ui/visual-quality.md)
+- [画面別UIブリーフ](./docs/ui/screens/)
 - [Storybook・エージェントUI検証](./docs/STORYBOOK.md)
 - [Codexタスクテンプレート](./docs/CODEX_TASKS.md)

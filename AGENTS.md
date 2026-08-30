@@ -10,7 +10,7 @@
 
 - Start with `README.md` for product scope and repository routing.
 - For setup, debugging, architecture, and validation, read `docs/DEVELOPMENT.md`.
-- For any Webview or styling task, read `docs/UI_DESIGN.md` before making design decisions.
+- For any Webview or styling task, read `docs/UI_DESIGN.md`, `docs/ui/project-profile.yaml`, `docs/ui/visual-quality.md`, and the relevant brief under `docs/ui/screens/` before making design decisions.
 - Treat `src/webviewProtocol.ts` as the contract between Extension Host and Webviews.
 
 ## Source boundaries
@@ -46,6 +46,10 @@
 
 - For Webview UI changes, use the nearest story under `webview/**/*.stories.ts`; add a state when the bug cannot already be reproduced directly by URL.
 - Prefer page-like and workflow stories over adding low-value stories for every icon or token.
+- Run a review-only `$ui-review` pass against actual Storybook/browser screenshots before choosing fixes. Keep that pass independent from implementation and address no more than the top three reviewed issues per iteration.
+- When the concern is momentum, state continuity, visual calm, recovery confidence, or repeated-task rhythm, run a separate review-only `$ui-feel-review` pass against at least two comparable browser task traces. Keep evidence coverage separate from product-feel judgments.
+- Use `$ui-feel-iterate` when one supported, adequately evidenced hypothesis and scope are unambiguous; clear natural-language assent to the immediately preceding recommendation is enough, without repeating its ID. Recapture the same task conditions and require a fresh independent `$ui-feel-review` before claiming the interaction feel improved.
+- Capture reproducible fixture-only evidence with `npm run ui:capture` and inspect its generated design board; do not include credentials or private GitLab data in stories or screenshots.
 - Start the catalog with `npm run storybook -- --no-open`, inspect both simulated VS Code themes, then run `npm run test:storybook` and `npm run build:storybook` for changed stories.
 - Read `docs/STORYBOOK.md` for direct story URLs, fixtures, and the VS Code API mock.
 - Do not claim that the official Storybook MCP addon supports this Vue repository. It is currently React-only preview functionality; use Storybook URLs and browser automation until official Vue manifest support is available.

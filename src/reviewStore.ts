@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { GitLabFileContentError, GitLabReviewClient } from "./gitlabApi";
+import { GitLabFileContentError, GitLabReviewClient, normalizeReactionName } from "./gitlabApi";
 import { getGitLabHostname } from "./glabAuthUtils";
 import { inferLanguage } from "./gitlabMappers";
 import { buildReviewLines, buildReviewLinesFromPatch, countLineDiff, countPatchDiff } from "./diffUtils";
@@ -7,6 +7,7 @@ import { editedTimestamp } from "./commentUtils";
 import { buildReviewLinesAsync, shouldBuildReviewLinesInWorker } from "./reviewDiffWorkerClient";
 import { ReviewThreadSortOrder, sortReviewThreads } from "./reviewTreeUtils";
 import { detectReviewUpdateRange, mergeReviewUpdateRanges } from "./reviewUpdateUtils";
+import { cloneReactions, mergeReactionUsers, optimisticallyToggleReaction } from "./reactionUtils";
 import {
   calculateReviewProgress,
   isReviewFileNewSinceLastReview,
@@ -24,6 +25,7 @@ import {
   LocalEdit,
   MergeRequestOption,
   ReviewDraftNote,
+  ReviewComment,
   ReviewFile,
   ReviewFileContents,
   ReviewFileView,
@@ -64,6 +66,10 @@ const cacheLimits = {
   branchFileCharacters: 2_000_000,
   commitDiffs: 12,
   commitDiffCharacters: 2_000_000,
+  commitFileContents: 12,
+  commitFileContentCharacters: 16_000_000,
+  comparisonFileContents: 12,
+  comparisonFileContentCharacters: 16_000_000,
   reviewStateCharacters: 8_000_000,
   reviewFileContentCharacters: 16_000_000,
   reviewFileContents: 12,
@@ -71,8 +77,6 @@ const cacheLimits = {
   reviewLineEntries: 12,
   lineWindow: 1_200
 } as const;
-const cachedReviewRevealDelayMs = 100;
-
 type LocalEditsByMergeRequest = Record<string, Record<string, LocalEdit>>;
 type MergeRequestReference = Pick<MergeRequestOption, "projectId" | "iid">;
 type WorkspaceAssociations = Record<string, MergeRequestWorkspaceAssociation>;
@@ -103,6 +107,12 @@ interface CachedReviewLines {
   updatedAt: number;
 }
 
+interface CachedCommitFileContents {
+  contents: CommitFileContents;
+  characters: number;
+  updatedAt: number;
+}
+
 export class ReviewStore {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   private state?: ReviewState;
@@ -114,16 +124,26 @@ export class ReviewStore {
   private selectedReference?: MergeRequestReference;
   private lastLoadedReference?: MergeRequestReference;
   private readonly reviewStateCache = new Map<string, ReviewState>();
+  private readonly clients = new Map<string, GitLabReviewClient>();
   private readonly reviewProgress: ReviewProgressByMergeRequest;
   private refreshGeneration = 0;
+  private readonly refreshLoads = new Map<string, Promise<void>>();
   private localEdits: LocalEditsByMergeRequest;
   private workspaceAssociations: WorkspaceAssociations;
   private readonly branchTreeCache = new Map<string, RepositoryTreeEntry[]>();
   private readonly branchFileCache = new Map<string, BranchFileContent>();
   private readonly branchTreeCacheTimes = new Map<string, number>();
   private readonly branchFileCacheTimes = new Map<string, number>();
+  private readonly branchTreeLoads = new Map<string, Promise<RepositoryTreeEntry[]>>();
+  private readonly branchFileLoads = new Map<string, Promise<BranchFileContent>>();
   private readonly commitDiffCache = new Map<string, CommitDiffFile[]>();
   private readonly commitDiffCacheTimes = new Map<string, number>();
+  private readonly commitDiffLoads = new Map<string, Promise<CommitDiffFile[]>>();
+  private readonly commitFileContentCache = new Map<string, CachedCommitFileContents>();
+  private readonly commitFileContentLoads = new Map<string, Promise<CommitFileContents>>();
+  private readonly comparisonFileContentCache = new Map<string, CachedCommitFileContents>();
+  private readonly comparisonFileContentLoads = new Map<string, Promise<CommitFileContents>>();
+  private readonly comparisonLoads = new Map<string, Promise<CommitDiffFile[]>>();
   private newChanges?: ReviewUpdateRange;
   private readonly reviewFileContentCache = new Map<string, CachedReviewFileContents>();
   private readonly reviewFileContentLoads = new Map<string, Promise<ReviewFileContents>>();
@@ -131,6 +151,8 @@ export class ReviewStore {
   private readonly reviewLineCache = new Map<string, CachedReviewLines>();
   private readonly reviewLineLoads = new Map<string, Promise<void>>();
   private readonly reviewLineFailures = new Set<string>();
+  private readonly reactionLoads = new Map<string, Promise<void>>();
+  private readonly reactionMutations = new Set<string>();
   private reviewFileContentCharacters = 0;
   private reviewLineCharacters = 0;
   private overviewRevision = 0;
@@ -431,6 +453,29 @@ export class ReviewStore {
   }
 
   async refresh(): Promise<void> {
+    const reference = this.getSelectedReference();
+    const cacheKey = reference ? reviewStateCacheKey(reference.projectId, reference.iid) : undefined;
+    if (cacheKey) {
+      const existing = this.refreshLoads.get(cacheKey);
+      if (existing) return existing;
+    }
+
+    const load = this.performRefresh(reference);
+    if (!cacheKey) return load;
+
+    this.refreshLoads.set(cacheKey, load);
+    void load.then(
+      () => {
+        if (this.refreshLoads.get(cacheKey) === load) this.refreshLoads.delete(cacheKey);
+      },
+      () => {
+        if (this.refreshLoads.get(cacheKey) === load) this.refreshLoads.delete(cacheKey);
+      }
+    );
+    return load;
+  }
+
+  private async performRefresh(reference: MergeRequestReference | undefined): Promise<void> {
     const generation = ++this.refreshGeneration;
     this.isRefreshing = true;
     if (!this.state) {
@@ -439,7 +484,6 @@ export class ReviewStore {
     this.errorMessage = undefined;
     this.emitChange();
 
-    const reference = this.getSelectedReference();
     const previousState = reference
       ? this.getCachedReviewState(reference) ?? (this.state && stateMatchesReference(this.state, reference, this.lastLoadedReference) ? this.state : undefined)
       : this.state;
@@ -495,36 +539,25 @@ export class ReviewStore {
     }
 
     const nextReference = { projectId, iid };
+    const previousReference = this.selectedReference;
     const cachedState = this.state && stateMatchesReference(this.state, nextReference, this.lastLoadedReference)
       ? this.state
       : this.getCachedReviewState(nextReference);
     if (this.state) this.cacheReviewState(this.state);
-    this.state = undefined;
+    if (!sameReference(previousReference, nextReference)) {
+      this.refreshLoads.clear();
+    }
+    this.state = cachedState;
     if (this.newChanges && (this.newChanges.projectId !== projectId || this.newChanges.mergeRequestIid !== iid)) {
       this.setNewChanges(undefined);
     }
-    this.lastLoadedReference = undefined;
-    this.loadState = "loading";
+    this.lastLoadedReference = cachedState ? nextReference : undefined;
+    this.loadState = cachedState ? "ready" : "loading";
     this.errorMessage = undefined;
-    this.emitChange();
     this.selectedReference = nextReference;
     this.persistBestEffort(REVIEW_CACHE_KEYS.selectedMergeRequest, this.selectedReference);
-    const refresh = this.refresh();
-    const revealCachedState = cachedState
-      ? setTimeout(() => {
-          if (!sameReference(this.selectedReference, nextReference) || this.loadState !== "loading") return;
-          this.state = cachedState;
-          this.lastLoadedReference = nextReference;
-          this.loadState = "ready";
-          this.errorMessage = undefined;
-          this.emitChange();
-        }, cachedReviewRevealDelayMs)
-      : undefined;
-    try {
-      await refresh;
-    } finally {
-      if (revealCachedState) clearTimeout(revealCachedState);
-    }
+    this.emitChange();
+    await this.refresh();
   }
 
   async setThreadSortOrder(order: ReviewThreadSortOrder): Promise<void> {
@@ -561,11 +594,28 @@ export class ReviewStore {
       return cached;
     }
 
-    const entries = (await this.getClient().listRepositoryTree(review.projectId, branch))
-      .slice(0, cacheLimits.branchTreeEntries);
-    this.setLimitedCache(this.branchTreeCache, this.branchTreeCacheTimes, cacheKey, entries, cacheLimits.branchTrees);
-    this.persistMapCacheBestEffort(REVIEW_CACHE_KEYS.branchTrees, this.branchTreeCache, this.branchTreeCacheTimes);
-    return entries;
+    const existing = this.branchTreeLoads.get(cacheKey);
+    if (existing) return existing;
+
+    let load: Promise<RepositoryTreeEntry[]>;
+    load = this.getClient().listRepositoryTree(review.projectId, branch)
+      .then((entries) => {
+        const boundedEntries = entries.slice(0, cacheLimits.branchTreeEntries);
+        this.setLimitedCache(
+          this.branchTreeCache,
+          this.branchTreeCacheTimes,
+          cacheKey,
+          boundedEntries,
+          cacheLimits.branchTrees
+        );
+        this.persistMapCacheBestEffort(REVIEW_CACHE_KEYS.branchTrees, this.branchTreeCache, this.branchTreeCacheTimes);
+        return boundedEntries;
+      })
+      .finally(() => {
+        if (this.branchTreeLoads.get(cacheKey) === load) this.branchTreeLoads.delete(cacheKey);
+      });
+    this.branchTreeLoads.set(cacheKey, load);
+    return load;
   }
 
   async loadCommitDiff(commitId: string): Promise<CommitDiffFile[]> {
@@ -582,17 +632,28 @@ export class ReviewStore {
       return cached;
     }
 
-    const files = await this.getClient().loadCommitDiff(review.projectId, commitId);
-    this.setLimitedCache(
-      this.commitDiffCache,
-      this.commitDiffCacheTimes,
-      cacheKey,
-      files,
-      cacheLimits.commitDiffs
-    );
-    this.trimCommitDiffCharacters();
-    this.persistCommitDiffCache();
-    return files;
+    const existing = this.commitDiffLoads.get(cacheKey);
+    if (existing) return existing;
+
+    let load: Promise<CommitDiffFile[]>;
+    load = this.getClient().loadCommitDiff(review.projectId, commitId)
+      .then((files) => {
+        this.setLimitedCache(
+          this.commitDiffCache,
+          this.commitDiffCacheTimes,
+          cacheKey,
+          files,
+          cacheLimits.commitDiffs
+        );
+        this.trimCommitDiffCharacters();
+        this.persistCommitDiffCache();
+        return files;
+      })
+      .finally(() => {
+        if (this.commitDiffLoads.get(cacheKey) === load) this.commitDiffLoads.delete(cacheKey);
+      });
+    this.commitDiffLoads.set(cacheKey, load);
+    return load;
   }
 
   async loadCommitFileContents(commitId: string, file: CommitDiffFile): Promise<CommitFileContents> {
@@ -600,14 +661,32 @@ export class ReviewStore {
     if (!review || !review.commits.some((commit) => commit.id === commitId)) {
       throw new Error("The commit is not part of the current merge request.");
     }
-    const contents = await this.getClient().loadCommitFileContents(review.projectId, commitId, file);
-    const threads = this.getThreadsForFile(file.path);
-    const threadLayout = threads
-      .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
-      .join("|");
-    const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
-    this.cacheReviewLines(`commit:${commitId}:${file.path}:full:${threadLayout}`, lines);
-    return contents;
+    const cacheKey = commitFileContentKey(review.projectId, commitId, file);
+    const cached = this.commitFileContentCache.get(cacheKey);
+    if (cached) {
+      cached.updatedAt = Date.now();
+      return cached.contents;
+    }
+    const existing = this.commitFileContentLoads.get(cacheKey);
+    if (existing) return existing;
+
+    let load: Promise<CommitFileContents>;
+    load = this.getClient().loadCommitFileContents(review.projectId, commitId, file)
+      .then(async (contents) => {
+        this.cacheCommitFileContents(cacheKey, contents);
+        const threads = this.getThreadsForFile(file.path);
+        const threadLayout = threads
+          .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
+          .join("|");
+        const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
+        this.cacheReviewLines(`commit:${commitId}:${file.path}:full:${threadLayout}`, lines);
+        return contents;
+      })
+      .finally(() => {
+        if (this.commitFileContentLoads.get(cacheKey) === load) this.commitFileContentLoads.delete(cacheKey);
+      });
+    this.commitFileContentLoads.set(cacheKey, load);
+    return load;
   }
 
   async loadCommitFileReviewContext(commitId: string, filePath: string): Promise<CommitFileReviewContext> {
@@ -637,18 +716,47 @@ export class ReviewStore {
     if (!review || this.newChanges?.fromSha !== context.range.fromSha || this.newChanges.toSha !== context.range.toSha) {
       throw new Error("The new changes comparison is no longer current.");
     }
-    const contents = await this.getClient().loadComparisonFileContents(
+    const cacheKey = comparisonFileContentKey(
       review.projectId,
       context.range.fromSha,
       context.range.toSha,
       context.file
     );
-    const threads = this.getThreadsForFile(context.file.path);
-    const threadLayout = threads
-      .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
-      .join("|");
-    const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
-    this.cacheReviewLines(`commit:compare:${context.range.fromSha}:${context.range.toSha}:${context.file.path}:full:${threadLayout}`, lines);
+    const cached = this.comparisonFileContentCache.get(cacheKey);
+    if (cached) {
+      cached.updatedAt = Date.now();
+      context.contents = cached.contents;
+      return cached.contents;
+    }
+    const existing = this.comparisonFileContentLoads.get(cacheKey);
+    if (existing) {
+      const contents = await existing;
+      context.contents = contents;
+      return contents;
+    }
+
+    let load: Promise<CommitFileContents>;
+    load = this.getClient().loadComparisonFileContents(
+      review.projectId,
+      context.range.fromSha,
+      context.range.toSha,
+      context.file
+    )
+      .then(async (contents) => {
+        this.cacheComparisonFileContents(cacheKey, contents);
+        const threads = this.getThreadsForFile(context.file.path);
+        const threadLayout = threads
+          .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
+          .join("|");
+        const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
+        this.cacheReviewLines(`commit:compare:${context.range.fromSha}:${context.range.toSha}:${context.file.path}:full:${threadLayout}`, lines);
+        return contents;
+      })
+      .finally(() => {
+        if (this.comparisonFileContentLoads.get(cacheKey) === load) this.comparisonFileContentLoads.delete(cacheKey);
+      });
+    this.comparisonFileContentLoads.set(cacheKey, load);
+    const contents = await load;
     context.contents = contents;
     return contents;
   }
@@ -765,14 +873,29 @@ export class ReviewStore {
       return cached;
     }
 
-    const file = await this.getClient().readRepositoryFile(review.projectId, branch, filePath);
-    if (file.content.length > cacheLimits.branchFileCharacters) {
-      return file;
-    }
-    this.setLimitedCache(this.branchFileCache, this.branchFileCacheTimes, cacheKey, file, cacheLimits.branchFiles);
-    this.trimBranchFileCharacters();
-    this.persistMapCacheBestEffort(REVIEW_CACHE_KEYS.branchFiles, this.branchFileCache, this.branchFileCacheTimes);
-    return file;
+    const existing = this.branchFileLoads.get(cacheKey);
+    if (existing) return existing;
+
+    let load: Promise<BranchFileContent>;
+    load = this.getClient().readRepositoryFile(review.projectId, branch, filePath)
+      .then((file) => {
+        if (file.content.length > cacheLimits.branchFileCharacters) return file;
+        this.setLimitedCache(
+          this.branchFileCache,
+          this.branchFileCacheTimes,
+          cacheKey,
+          file,
+          cacheLimits.branchFiles
+        );
+        this.trimBranchFileCharacters();
+        this.persistMapCacheBestEffort(REVIEW_CACHE_KEYS.branchFiles, this.branchFileCache, this.branchFileCacheTimes);
+        return file;
+      })
+      .finally(() => {
+        if (this.branchFileLoads.get(cacheKey) === load) this.branchFileLoads.delete(cacheKey);
+      });
+    this.branchFileLoads.set(cacheKey, load);
+    return load;
   }
 
   async addComment(threadId: string, body: string): Promise<void> {
@@ -812,6 +935,103 @@ export class ReviewStore {
       thread.pending = false;
       this.emitChange();
       void vscode.window.showErrorMessage("GitLab への返信を追加できませんでした。");
+    }
+  }
+
+  async loadCommentReactions(threadId: string, commentId: string): Promise<void> {
+    const review = this.state;
+    const comment = this.findComment(threadId, commentId);
+    if (!review || !comment || comment.pending || comment.reactionsLoaded || comment.reactionsLoading) return;
+
+    const key = `${review.id}:${commentId}`;
+    const existingLoad = this.reactionLoads.get(key);
+    if (existingLoad) return existingLoad;
+
+    comment.reactionsLoading = true;
+    comment.reactionError = undefined;
+    this.emitChange();
+
+    const load = this.getClient().listCommentReactions(review, commentId)
+      .then((reactions) => {
+        if (this.state?.id !== review.id) return;
+        const current = this.findComment(threadId, commentId);
+        if (!current) return;
+        current.reactions = reactions;
+        current.reactionsLoaded = true;
+        current.reactionsLoading = false;
+        current.reactionError = undefined;
+        this.persistReviewState();
+        this.emitChange();
+      })
+      .catch(() => {
+        if (this.state?.id !== review.id) return;
+        const current = this.findComment(threadId, commentId);
+        if (!current) return;
+        current.reactionsLoading = false;
+        current.reactionError = "リアクションを読み込めませんでした。";
+        this.emitChange();
+      })
+      .finally(() => this.reactionLoads.delete(key));
+    this.reactionLoads.set(key, load);
+    return load;
+  }
+
+  async toggleCommentReaction(threadId: string, commentId: string, name: string): Promise<void> {
+    const normalizedName = normalizeReactionName(name);
+    let review = this.state;
+    let comment = this.findComment(threadId, commentId);
+    if (!review || !comment || comment.pending) return;
+
+    if (!comment.reactionsLoaded) {
+      await this.loadCommentReactions(threadId, commentId);
+      review = this.state;
+      comment = this.findComment(threadId, commentId);
+    }
+    if (!review || !comment || !comment.reactionsLoaded || comment.pending) return;
+
+    const mutationKey = `${review.id}:${commentId}:${normalizedName}`;
+    if (this.reactionMutations.has(mutationKey)) return;
+
+    const previous = cloneReactions(comment.reactions ?? []);
+    const existing = comment.reactions?.find((reaction) => reaction.name === normalizedName);
+    const awardId = existing?.currentUserAwardId;
+    comment.reactions = optimisticallyToggleReaction(
+      comment.reactions ?? [],
+      normalizedName,
+      review.currentUserId,
+      Boolean(awardId)
+    );
+    comment.reactionError = undefined;
+    this.reactionMutations.add(mutationKey);
+    this.emitChange();
+
+    try {
+      if (awardId) {
+        await this.getClient().removeCommentReaction(review, commentId, awardId);
+      } else {
+        const added = await this.getClient().addCommentReaction(review, commentId, normalizedName);
+        const current = this.findComment(threadId, commentId);
+        const optimistic = current?.reactions?.find((reaction) => reaction.name === normalizedName);
+        if (optimistic) {
+          optimistic.currentUserAwardId = added.currentUserAwardId;
+          optimistic.users = mergeReactionUsers(optimistic.users, added.users);
+        }
+      }
+      const current = this.findComment(threadId, commentId);
+      const settled = current?.reactions?.find((reaction) => reaction.name === normalizedName);
+      if (settled) settled.pending = false;
+      this.persistReviewState();
+      this.emitChange();
+    } catch {
+      const current = this.findComment(threadId, commentId);
+      if (current) {
+        current.reactions = previous;
+        current.reactionError = "リアクションを更新できませんでした。";
+        this.emitChange();
+      }
+      void vscode.window.showErrorMessage("GitLab のリアクションを更新できませんでした。");
+    } finally {
+      this.reactionMutations.delete(mutationKey);
     }
   }
 
@@ -1196,7 +1416,11 @@ export class ReviewStore {
     if (!hostname) {
       throw new Error("Invalid GitLab host.");
     }
-    return new GitLabReviewClient(hostname);
+    const cached = this.clients.get(hostname);
+    if (cached) return cached;
+    const client = new GitLabReviewClient(hostname);
+    this.clients.set(hostname, client);
+    return client;
   }
 
   private findFile(filePath: string): ReviewFile | undefined {
@@ -1204,6 +1428,12 @@ export class ReviewStore {
       this.fileIndex = new Map((this.state?.files ?? []).map((file) => [file.path, file]));
     }
     return this.fileIndex.get(filePath);
+  }
+
+  private findComment(threadId: string, commentId: string): ReviewComment | undefined {
+    return this.state?.threads
+      .find((thread) => thread.id === threadId)
+      ?.comments.find((comment) => comment.id === commentId);
   }
 
   private replaceThread(threadId: string, replacement: ReviewThread): void {
@@ -1268,17 +1498,28 @@ export class ReviewStore {
       this.commitDiffCacheTimes.set(cacheKey, Date.now());
       return cached;
     }
-    const files = await this.getClient().compareCommits(range.projectId, range.fromSha, range.toSha);
-    this.setLimitedCache(
-      this.commitDiffCache,
-      this.commitDiffCacheTimes,
-      cacheKey,
-      files,
-      cacheLimits.commitDiffs
-    );
-    this.trimCommitDiffCharacters();
-    this.persistCommitDiffCache();
-    return files;
+    const existing = this.comparisonLoads.get(cacheKey);
+    if (existing) return existing;
+
+    let load: Promise<CommitDiffFile[]>;
+    load = this.getClient().compareCommits(range.projectId, range.fromSha, range.toSha)
+      .then((files) => {
+        this.setLimitedCache(
+          this.commitDiffCache,
+          this.commitDiffCacheTimes,
+          cacheKey,
+          files,
+          cacheLimits.commitDiffs
+        );
+        this.trimCommitDiffCharacters();
+        this.persistCommitDiffCache();
+        return files;
+      })
+      .finally(() => {
+        if (this.comparisonLoads.get(cacheKey) === load) this.comparisonLoads.delete(cacheKey);
+      });
+    this.comparisonLoads.set(cacheKey, load);
+    return load;
   }
 
   private applyChangedPaths(range: ReviewUpdateRange, files: readonly CommitDiffFile[]): void {
@@ -1312,6 +1553,50 @@ export class ReviewStore {
     this.threadIndex = undefined;
     this.fileIndex = undefined;
     this.onDidChangeEmitter.fire();
+  }
+
+  private cacheCommitFileContents(key: string, contents: CommitFileContents): void {
+    this.cacheBoundedCommitFileContents(
+      this.commitFileContentCache,
+      key,
+      contents,
+      cacheLimits.commitFileContents,
+      cacheLimits.commitFileContentCharacters
+    );
+  }
+
+  private cacheComparisonFileContents(key: string, contents: CommitFileContents): void {
+    this.cacheBoundedCommitFileContents(
+      this.comparisonFileContentCache,
+      key,
+      contents,
+      cacheLimits.comparisonFileContents,
+      cacheLimits.comparisonFileContentCharacters
+    );
+  }
+
+  private cacheBoundedCommitFileContents(
+    cache: Map<string, CachedCommitFileContents>,
+    key: string,
+    contents: CommitFileContents,
+    maxEntries: number,
+    maxCharacters: number
+  ): void {
+    const characters = Buffer.byteLength(contents.oldText, "utf8") + Buffer.byteLength(contents.newText, "utf8");
+    const previous = cache.get(key);
+    if (previous) {
+      // The cache is bounded by both entry count and content size.
+      // Remove the old size before replacing the value.
+      cache.delete(key);
+    }
+    cache.set(key, { contents, characters, updatedAt: Date.now() });
+    while (cache.size > maxEntries || totalCachedCharacters(cache) > maxCharacters) {
+      if (cache.size <= 1) break;
+      const oldest = [...cache].reduce(
+        (candidate, entry) => entry[1].updatedAt < candidate[1].updatedAt ? entry : candidate
+      );
+      cache.delete(oldest[0]);
+    }
   }
 
   private cacheReviewFileContents(key: string, contents: ReviewFileContents): void {
@@ -1570,8 +1855,29 @@ function commitDiffSize(files: readonly CommitDiffFile[]): number {
   );
 }
 
+function totalCachedCharacters(cache: Map<string, CachedCommitFileContents>): number {
+  return [...cache.values()].reduce((total, entry) => total + entry.characters, 0);
+}
+
 function reviewFileContentKey(review: ReviewState, file: ReviewFile): string {
   return `${review.id}:${review.diffRefs?.baseSha ?? ""}:${review.diffRefs?.headSha ?? ""}:${file.oldPath}:${file.newPath}`;
+}
+
+function commitFileContentKey(
+  projectId: string,
+  commitId: string,
+  file: Pick<CommitDiffFile, "oldPath" | "newPath" | "newFile" | "deletedFile">
+): string {
+  return `commit:${projectId}:${commitId}:${file.oldPath}:${file.newPath}:${file.newFile ? "new" : ""}:${file.deletedFile ? "deleted" : ""}`;
+}
+
+function comparisonFileContentKey(
+  projectId: string,
+  fromSha: string,
+  toSha: string,
+  file: Pick<CommitDiffFile, "oldPath" | "newPath" | "newFile" | "deletedFile">
+): string {
+  return `compare:${projectId}:${fromSha}:${toSha}:${file.oldPath}:${file.newPath}:${file.newFile ? "new" : ""}:${file.deletedFile ? "deleted" : ""}`;
 }
 
 function toReviewFileView(file: ReviewFile): ReviewFileView {

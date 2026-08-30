@@ -71,6 +71,7 @@ export class LocalGitService implements vscode.Disposable {
   private activeTargetBranch?: string;
   private activeProjectId?: string;
   private refreshGeneration = 0;
+  private readonly refreshLoads = new Map<string, Promise<void>>();
 
   readonly onDidChange = this.onDidChangeEmitter.event;
 
@@ -98,6 +99,25 @@ export class LocalGitService implements vscode.Disposable {
   }
 
   async refresh(targetBranch?: string, projectId?: string): Promise<void> {
+    const workspaceRoot = this.workspaceRootProvider();
+    const scope = JSON.stringify([workspaceRoot ?? null, targetBranch ?? null, projectId ?? null]);
+    const existing = this.refreshLoads.get(scope);
+    if (existing) return existing;
+
+    let load: Promise<void>;
+    load = this.performRefresh(targetBranch, projectId, workspaceRoot)
+      .finally(() => {
+        if (this.refreshLoads.get(scope) === load) this.refreshLoads.delete(scope);
+      });
+    this.refreshLoads.set(scope, load);
+    return load;
+  }
+
+  private async performRefresh(
+    targetBranch: string | undefined,
+    projectId: string | undefined,
+    workspaceRoot: string | undefined
+  ): Promise<void> {
     const generation = ++this.refreshGeneration;
     this.activeTargetBranch = targetBranch;
     this.activeProjectId = projectId;
@@ -109,7 +129,6 @@ export class LocalGitService implements vscode.Disposable {
     };
     this.onDidChangeEmitter.fire();
 
-    const workspaceRoot = this.workspaceRootProvider();
     if (!workspaceRoot) {
       if (generation !== this.refreshGeneration) return;
       this.inspection = undefined;

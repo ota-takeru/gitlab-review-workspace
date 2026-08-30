@@ -10,6 +10,20 @@ The UI is a dense professional developer tool. It should feel familiar to GitLab
 - Use cards only for independent objects such as discussions or overlays.
 - Avoid decorative gradients, oversized headings, excessive rounding, and redundant borders.
 
+## Project profile and screen briefs
+
+Treat [`docs/ui/project-profile.yaml`](ui/project-profile.yaml) as the product-specific evaluation contract and [`docs/ui/visual-quality.md`](ui/visual-quality.md) as the rendered visual-quality contract. Before changing a surface, also read its brief under [`docs/ui/screens/`](ui/screens/):
+
+- [`sidebar-review.md`](ui/screens/sidebar-review.md)
+- [`review-file.md`](ui/screens/review-file.md)
+- [`commit-diff.md`](ui/screens/commit-diff.md)
+
+The profile defines the primary user, visual and interaction direction, weighted review axes, and hard accessibility/recovery gates. The visual-quality contract defines the evidence-backed visual read. The brief defines the surface's primary task, visual intent, required states, and canonical evidence. Use [`SCREEN_BRIEF.template.md`](ui/SCREEN_BRIEF.template.md) for a new major surface and record durable choices in [`decisions.md`](ui/decisions.md).
+
+The profile follows the reusable UI-skill `schema_version: 1` contract. It also selects this repository's Storybook/Playwright and VS Code host adapters, context anchors, evidence policy, editable/generated paths, and validation commands. Generic UI skills resolve an explicitly supplied profile first, then `.agents/ui/profile.yaml`, then this `docs/ui/project-profile.yaml` compatibility location; do not copy GitLab- or VS Code-specific rules back into the reusable skill bodies.
+
+Run general UI work as distinct review and implementation passes: first use `$ui-review` to report evidence-backed problems without editing code, then implement at most the three highest-value accepted issues. When the goal includes interaction feel, add an independent `$ui-feel-review` task trace, implement one accepted causal hypothesis with `$ui-feel-iterate`, and repeat the feel review in a fresh context. Recapture the same story, fixture, viewport, theme, starting state, and task sequence before evaluating the result.
+
 ## Source of truth
 
 - Semantic tokens and global behavior: `webview/common/theme.css`
@@ -94,11 +108,13 @@ For each relevant surface, verify:
 
 ## UI change workflow
 
-1. Capture or identify the current state before editing.
-2. State the information-hierarchy problem and intended behavior.
-3. Change layout and structure before decorative styling.
-4. Reuse existing components and tokens.
-5. Build and inspect the affected state at the sizes above.
-6. Compare before/after in light and dark themes.
-7. Iterate on remaining overflow, contrast, density, and state-clarity issues.
-
+1. Read the project profile, visual-quality contract, and relevant screen brief.
+2. Capture or identify the current Storybook state before editing with `npm run ui:capture` when a canonical case exists, then inspect the generated design board.
+3. Run an independent `$ui-review` pass across the board's first-glance and full-size comparisons and select no more than three issues.
+4. For momentum, continuity, calm, confidence, or rhythm concerns, run `$ui-feel-review` through at least two comparable task traces. Treat missing fixture or host transitions as evidence gaps, not product defects.
+5. State the accepted information-hierarchy issue or one causal interaction-feel hypothesis and its intended behavior.
+6. Use `$ui-feel-iterate` for an accepted feel hypothesis; otherwise change layout and structure before decorative styling.
+7. Reuse existing components and tokens.
+8. Build and inspect the affected state at the sizes above.
+9. Compare before/after in light and dark themes under the same capture conditions and task sequence.
+10. Use a fresh independent review pass before claiming improvement, then defer remaining issues to a later bounded iteration.

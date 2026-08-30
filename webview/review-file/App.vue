@@ -28,7 +28,9 @@ import GlDiffScopeToggle, { type GlDiffScope } from "../common/components/GlDiff
 import GlEmptyState from "../common/components/GlEmptyState.vue";
 import GlIcon from "../common/components/GlIcon.vue";
 import GlIconButton from "../common/components/GlIconButton.vue";
+import GlHighlightedCode from "../common/components/GlHighlightedCode.vue";
 import GlMarkdown from "../common/components/GlMarkdown.vue";
+import GlReactionBar from "../common/components/GlReactionBar.vue";
 import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
 import { vscode } from "../common/vscode";
@@ -111,6 +113,51 @@ const reviewSideBySideRows = computed<ReviewSideBySideRow[]>(() => {
     left: reviewSideLine(row.left, "left"),
     right: reviewSideLine(row.right, "right")
   }));
+});
+
+const emptyDiffState = computed(() => {
+  const current = model.value;
+  if (!current || reviewSideBySideRows.value.length > 0) return undefined;
+  if (current.fullFileState === "loading") return undefined;
+  if (current.file.tooLarge) {
+    return {
+      title: "Diff too large to display",
+      description: current.fullFileMessage || "GitLab did not return a displayable patch for this file. The file identity and review state are still available above.",
+      icon: "warning" as const
+    };
+  }
+  if (current.file.collapsed) {
+    return {
+      title: "Diff is collapsed",
+      description: "GitLab collapsed this file's patch. Load the full file or switch to another changed file to continue.",
+      icon: "information" as const
+    };
+  }
+  if (current.fullFileState === "binary") {
+    return {
+      title: "Binary file cannot be displayed",
+      description: current.fullFileMessage || "This file has no text diff available in the review panel.",
+      icon: "warning" as const
+    };
+  }
+  if (current.fullFileState === "error") {
+    return {
+      title: "Full file unavailable",
+      description: current.fullFileMessage || "The full file could not be loaded for this review.",
+      icon: "warning" as const
+    };
+  }
+  return {
+    title: "No displayable changes",
+    description: "GitLab returned no displayable patch for this file.",
+    icon: "file" as const
+  };
+});
+const fullFileStatusVisible = computed(() => {
+  const current = model.value;
+  if (!current || newChangesUnavailable.value || current.fullFileState === "loaded") return false;
+  if (emptyDiffState.value && ["too-large", "binary", "error"].includes(current.fullFileState)) return false;
+  return true;
 });
 
 function reviewSideLine(line: ReviewLine | undefined, side: "left" | "right"): ReviewSideLine | undefined {
@@ -743,6 +790,17 @@ onBeforeUnmount(() => {
               :pending="comment.pending"
             >
               <GlMarkdown :source="comment.body" :project-id="state.projectId" />
+              <template #footer>
+                <GlReactionBar
+                  :reactions="comment.reactions"
+                  :loaded="comment.reactionsLoaded"
+                  :loading="comment.reactionsLoading"
+                  :error="comment.reactionError"
+                  :disabled="comment.pending"
+                  @load="post({ type: 'loadCommentReactions', threadId: thread.id, commentId: comment.id })"
+                  @toggle="name => post({ type: 'toggleCommentReaction', threadId: thread.id, commentId: comment.id, name })"
+                />
+              </template>
             </GlComment>
           </div>
         </article>
@@ -808,6 +866,18 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
+    <nav
+      v-if="!newChangesUnavailable && (model.lineWindow.hasPrevious || model.lineWindow.hasNext)"
+      class="line-window-nav line-window-nav-top"
+      aria-label="Large diff pages (top)"
+      data-position="top"
+    >
+      <GlButton size="small" :disabled="!model.lineWindow.hasPrevious" @click="loadPreviousWindow">Previous lines</GlButton>
+      <span>{{ model.lineWindow.start + 1 }}–{{ model.lineWindow.end }} / {{ model.lineWindow.total }}</span>
+      <GlButton size="small" :disabled="!model.lineWindow.hasNext" @click="loadNextWindow">Next lines</GlButton>
+      <small class="line-window-omission"><GlIcon name="information" :size="12" />Other lines are omitted from this window.</small>
+    </nav>
+
     <GlEmptyState
       v-if="newChangesUnavailable"
       :title="state.newChanges?.loading ? 'Comparing new changes…' : state.newChanges?.errorMessage ? 'Could not compare new changes' : 'No new changes in this file'"
@@ -823,12 +893,12 @@ onBeforeUnmount(() => {
       <span class="legend-item local-del"><span class="legend-swatch" />Local deletion</span>
     </div>
 
-    <div v-if="!newChangesUnavailable && model.fullFileState !== 'loaded'" class="full-file-state" role="status">
+    <div v-if="fullFileStatusVisible" class="full-file-state" role="status">
       <span v-if="model.fullFileState === 'loading'"><GlIcon name="spinner" class="spin" :size="13" /> Loading full file…</span>
       <span v-else-if="model.fullFileState === 'too-large' || model.fullFileState === 'binary' || model.fullFileState === 'error'">
         <GlIcon name="warning" :size="13" />{{ model.fullFileMessage || 'The full file cannot be displayed.' }}
       </span>
-      <span v-else>Showing GitLab patch only.</span>
+      <span v-else>Showing changed lines from the GitLab patch; surrounding lines are omitted.</span>
       <GlButton
         v-if="model.fullFileState === 'not-loaded' || model.fullFileState === 'error'"
         size="small"
@@ -836,8 +906,12 @@ onBeforeUnmount(() => {
       >Load full file</GlButton>
     </div>
 
+    <div v-if="!newChangesUnavailable && emptyDiffState" class="empty-diff-state" role="status">
+      <GlEmptyState :title="emptyDiffState.title" :description="emptyDiffState.description" :icon="emptyDiffState.icon" compact />
+    </div>
+
     <GlDiffSideBySideTable
-      v-if="!newChangesUnavailable"
+      v-if="!newChangesUnavailable && !emptyDiffState"
       class="code-table"
       :rows="reviewSideBySideRows"
        :left-label="'Before'"
@@ -870,7 +944,7 @@ onBeforeUnmount(() => {
            <div class="split-code-side" :class="sideClasses(row.left)">
             <span class="split-line-no">{{ row.left?.line ?? '' }}</span>
             <span class="split-change-marker" :title="row.left ? rowStateLabel({ key: row.key, left: row.left }) : ''">{{ sideMarker(row.left) }}</span>
-            <pre class="split-code"><code>{{ row.left?.text || ' ' }}</code></pre>
+            <pre class="split-code"><GlHighlightedCode :code="row.left?.text || ' '" :language="model.summary.language" :file-path="model.file.path" /></pre>
             <span v-if="threadsInSide(row.left).length" class="line-discussions" :title="`${threadsInSide(row.left).length} discussions`">
               <GlIcon name="comment" :size="12" />{{ threadsInSide(row.left).length }}
             </span>
@@ -879,7 +953,7 @@ onBeforeUnmount(() => {
            <div class="split-code-side" :class="sideClasses(row.right)">
             <span class="split-line-no">{{ row.right?.line ?? '' }}</span>
             <span class="split-change-marker" :title="row.right ? rowStateLabel({ key: row.key, right: row.right }) : ''">{{ sideMarker(row.right) }}</span>
-            <pre class="split-code"><code>{{ row.right?.text || ' ' }}</code></pre>
+            <pre class="split-code"><GlHighlightedCode :code="row.right?.text || ' '" :language="model.summary.language" :file-path="model.file.path" /></pre>
             <span v-if="threadsInSide(row.right).length" class="line-discussions" :title="`${threadsInSide(row.right).length} discussions`">
               <GlIcon name="comment" :size="12" />{{ threadsInSide(row.right).length }}
             </span>
@@ -960,7 +1034,9 @@ onBeforeUnmount(() => {
             />
           </header>
 
-          <div v-if="!isThreadCollapsed(thread)" :id="threadPanelId(thread)" class="discussion-content">
+          <Transition name="gl-collapse">
+            <div v-if="!isThreadCollapsed(thread)" class="gl-collapse-shell">
+              <div :id="threadPanelId(thread)" class="discussion-content gl-collapse-content">
             <GlComment
               v-for="comment in thread.comments"
               :key="comment.id"
@@ -1001,6 +1077,17 @@ onBeforeUnmount(() => {
                 @submit="submitCommentEdit(thread.id, comment)"
                 @cancel="cancelCommentEdit(thread.id, comment)"
               />
+              <template #footer>
+                <GlReactionBar
+                  :reactions="comment.reactions"
+                  :loaded="comment.reactionsLoaded"
+                  :loading="comment.reactionsLoading"
+                  :error="comment.reactionError"
+                  :disabled="comment.pending"
+                  @load="post({ type: 'loadCommentReactions', threadId: thread.id, commentId: comment.id })"
+                  @toggle="name => post({ type: 'toggleCommentReaction', threadId: thread.id, commentId: comment.id, name })"
+                />
+              </template>
             </GlComment>
 
             <GlCommentForm
@@ -1014,15 +1101,18 @@ onBeforeUnmount(() => {
               @update:modelValue="value => { replyDrafts[thread.id] = value; persist(); }"
               @submit="reply(thread)"
             />
-          </div>
+              </div>
+            </div>
+          </Transition>
         </article>
       </template>
     </GlDiffSideBySideTable>
 
     <nav
       v-if="model.lineWindow.hasPrevious || model.lineWindow.hasNext"
-      class="line-window-nav"
+      class="line-window-nav line-window-nav-bottom"
       aria-label="Large diff pages"
+      data-position="bottom"
     >
       <GlButton size="small" :disabled="!model.lineWindow.hasPrevious" @click="loadPreviousWindow">Previous lines</GlButton>
       <span>{{ model.lineWindow.start + 1 }}–{{ model.lineWindow.end }} / {{ model.lineWindow.total }}</span>
@@ -1038,11 +1128,17 @@ onBeforeUnmount(() => {
   background: var(--gl-surface-default);
 }
 
-.review-root { display: grid; grid-template-rows: auto auto 1fr; }
-.review-root.has-version-compare { grid-template-rows: auto auto auto 1fr; }
+.review-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
 .edit-root { display: grid; grid-template-rows: auto 1fr; }
 
 .version-compare {
+  flex: none;
   min-width: 0;
   min-height: 34px;
   display: flex;
@@ -1077,6 +1173,7 @@ onBeforeUnmount(() => {
 .local-state { color: var(--gl-local-accent); }
 
 .diff-context {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1089,6 +1186,7 @@ onBeforeUnmount(() => {
 }
 .full-file-state,
 .line-window-nav {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1101,7 +1199,20 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 .full-file-state > span { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); }
-.line-window-nav { border-top: 1px solid var(--gl-border-subtle); }
+.line-window-nav { flex-wrap: wrap; border-top: 1px solid var(--gl-border-subtle); }
+.line-window-nav-top { border-top: 0; border-bottom: 1px solid var(--gl-border-subtle); }
+.line-window-nav-bottom { border-top: 1px solid var(--gl-border-subtle); }
+.line-window-omission { flex-basis: 100%; display: inline-flex; justify-content: center; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 10px; }
+.empty-diff-state {
+  flex: 1 1 auto;
+  min-height: 160px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  border-bottom: 1px solid var(--gl-border-subtle);
+}
+.empty-diff-state :deep(.gl-empty-state) { width: 100%; }
 
 .context-copy { margin-right: auto; }
 .scope-label { color: var(--gl-text-subtle); white-space: nowrap; }
@@ -1112,7 +1223,7 @@ onBeforeUnmount(() => {
 .local-add .legend-swatch { background: color-mix(in srgb, var(--gl-local-accent) 20%, transparent); }
 .local-del .legend-swatch { background: color-mix(in srgb, var(--gl-local-accent) 14%, transparent); }
 
-.code-table { width: 100%; overflow: auto; }
+.code-table { flex: 1 1 auto; min-height: 0; width: 100%; overflow: auto; }
 .split-code-row {
   display: grid;
   content-visibility: auto;
@@ -1226,7 +1337,7 @@ onBeforeUnmount(() => {
   border-top-color: var(--gl-resolved-accent);
   background: color-mix(in srgb, var(--gl-resolved-accent) 4%, var(--gl-surface-raised));
 }
-.discussion.pending { opacity: .78; }
+.discussion.pending { border-top-style: dashed; }
 .discussion-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1262,7 +1373,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .discussion-toggle:hover { background: var(--gl-hover-surface); }
-.discussion-toggle > :first-child { color: var(--gl-thread-accent); transition: transform .12s; }
+.discussion-toggle > :first-child { color: var(--gl-thread-accent); transition: transform var(--gl-motion-duration-fast) var(--gl-motion-ease-standard); }
 .discussion.resolved .discussion-toggle > :first-child { color: var(--gl-resolved-accent); }
 .discussion-toggle[aria-expanded="true"] > :first-child { transform: rotate(90deg); }
 .discussion-heading { min-width: 0; flex: 1; display: grid; gap: 1px; overflow: hidden; }
@@ -1345,7 +1456,7 @@ onBeforeUnmount(() => {
 
 .rail-comments { display: grid; }
 
-.flash { outline: 1px solid var(--gl-focus-ring); outline-offset: -1px; animation: file-flash 1.5s ease-out; }
+.flash { outline: 1px solid var(--gl-focus-ring); outline-offset: -1px; animation: file-flash var(--gl-motion-duration-flash) var(--gl-motion-ease-enter); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @keyframes file-flash {

@@ -7,17 +7,17 @@ const GitLabReferenceTool = () => {
 
   return (
     <Button
-      onClick={() => api.selectStory("references-gitlab--overview")}
-      title="Open the GitLab reference catalog"
+      onClick={() => api.selectStory("references-component-comparisons--actions")}
+      title="Compare extension components with rendered GitLab/Pajamas references"
     >
-      GitLab reference
+      Compare with GitLab
     </Button>
   );
 };
 
 addons.add("gitlab-reference", {
   type: types.TOOL,
-  title: "GitLab reference",
+  title: "Compare with GitLab",
   match: () => true,
   render: () => <GitLabReferenceTool />
 });

@@ -18,6 +18,10 @@ export class GlabAuthService implements vscode.Disposable {
   private loginTerminalCloseListener?: vscode.Disposable;
   private loginHostname = "gitlab.com";
   private loginApiProtocol: GitLabApiProtocol = "https";
+  private glabVersion?: string;
+  private glabVersionOk = false;
+  private glabVersionResolved = false;
+  private glabVersionLoad?: Promise<string | undefined>;
   private state: GlabAuthState = {
     phase: "checking",
     hostname: "gitlab.com"
@@ -49,17 +53,19 @@ export class GlabAuthService implements vscode.Disposable {
     this.loginApiProtocol = resolvedHost.apiProtocol;
     this.setState({ phase: "checking", hostname });
 
-    const version = await runGlab(["--version"], 10_000);
-    if (!version.ok) {
+    const [version, status] = await Promise.all([
+      this.getGlabVersion(),
+      runGlab(["auth", "status", "--hostname", hostname], 10_000)
+    ]);
+    if (!this.glabVersionOk) {
       this.setState({ phase: "unavailable", hostname });
       return this.state;
     }
 
-    const status = await runGlab(["auth", "status", "--hostname", hostname], 10_000);
     this.setState({
       phase: status.ok ? "available" : "signedOut",
       hostname,
-      version: firstLine(version.stdout)
+      version
     });
     return this.state;
   }
@@ -113,6 +119,26 @@ export class GlabAuthService implements vscode.Disposable {
   private setState(state: GlabAuthState): void {
     this.state = state;
     this.onDidChangeStateEmitter.fire(state);
+  }
+
+  private getGlabVersion(): Promise<string | undefined> {
+    if (this.glabVersionResolved) return Promise.resolve(this.glabVersion);
+    if (this.glabVersionLoad) return this.glabVersionLoad;
+
+    let load: Promise<string | undefined>;
+    load = runGlab(["--version"], 10_000)
+      .then((result) => {
+        this.glabVersionOk = result.ok;
+        this.glabVersion = result.ok ? firstLine(result.stdout) : undefined;
+        // Cache successful detection for the session, but retry transient failures.
+        this.glabVersionResolved = result.ok;
+        return this.glabVersion;
+      })
+      .finally(() => {
+        if (this.glabVersionLoad === load) this.glabVersionLoad = undefined;
+      });
+    this.glabVersionLoad = load;
+    return load;
   }
 }
 

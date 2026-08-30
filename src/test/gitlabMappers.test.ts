@@ -4,12 +4,38 @@ import {
   inferLanguage,
   mapGitLabCommitDiffs,
   mapGitLabCommits,
+  mapGitLabAwardEmoji,
   mapGitLabDiscussions,
   mapGitLabMyWorkMergeRequests,
   mapGitLabMyWorkTodos,
   mapGitLabReviewDiffs,
   mapGitLabTodos
 } from "../gitlabMappers";
+
+test("mapGitLabAwardEmoji groups reactions and tracks the current user's award", () => {
+  const reactions = mapGitLabAwardEmoji([
+    { id: 1, name: "thumbsup", user: { id: 7, username: "me", name: "Me" } },
+    { id: 2, name: "thumbsup", user: { id: 8, username: "reviewer", name: "Reviewer" } },
+    { id: 3, name: "rocket", user: { id: 8, username: "reviewer", name: "Reviewer" } }
+  ], "7");
+
+  assert.deepEqual(reactions, [
+    {
+      name: "thumbsup",
+      count: 2,
+      currentUserAwardId: "1",
+      users: [
+        { id: "7", username: "me", name: "Me", avatarUrl: undefined },
+        { id: "8", username: "reviewer", name: "Reviewer", avatarUrl: undefined }
+      ]
+    },
+    {
+      name: "rocket",
+      count: 1,
+      users: [{ id: "8", username: "reviewer", name: "Reviewer", avatarUrl: undefined }]
+    }
+  ]);
+});
 
 test("mapGitLabReviewDiffs keeps lightweight patch metadata and counts", () => {
   const [file] = mapGitLabReviewDiffs([{

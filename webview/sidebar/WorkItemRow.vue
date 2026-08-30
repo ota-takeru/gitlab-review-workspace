@@ -86,17 +86,18 @@ function relativeTime(value?: string): string {
   min-width: 0;
   display: grid;
   gap: var(--gl-spacing-4);
-  padding: var(--gl-spacing-8);
-  border: 1px solid var(--gl-border-default);
-  border-left: 3px solid var(--gl-thread-accent);
-  border-radius: var(--gl-radius-md);
+  padding: var(--gl-spacing-8) var(--gl-spacing-4);
+  border: 0;
+  border-bottom: 1px solid var(--gl-border-subtle);
+  border-left: 2px solid transparent;
   color: var(--gl-text-default);
-  background: var(--gl-surface-raised);
+  background: transparent;
   text-align: left;
 }
 .mr-row { cursor: pointer; }
-.mr-row:hover { background: var(--gl-hover-surface); border-color: var(--gl-border-strong); }
-.candidate-row { border-left-color: var(--gl-accent-purple); background: color-mix(in srgb, var(--gl-accent-purple) 5%, var(--gl-surface-raised)); }
+.mr-row:hover { background: var(--gl-hover-surface); border-bottom-color: var(--gl-border-default); }
+.mr-row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.candidate-row { border-left-color: var(--gl-accent-purple); background: color-mix(in srgb, var(--gl-accent-purple) 5%, transparent); }
 .work-row-topline { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--gl-spacing-8); }
 .work-row-topline time { flex: none; color: var(--gl-text-subtle); font-size: 10px; }
 .work-badges { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: var(--gl-spacing-2); }

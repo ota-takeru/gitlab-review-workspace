@@ -10,7 +10,11 @@ npm test
 
 Open the repository in VS Code and launch `Run Extension`. The configured pre-launch task runs `npm run compile` before starting the Extension Development Host.
 
-On Windows, the task invokes the build through WSL. Keep the repository path accessible from both VS Code and WSL.
+On Windows, the task invokes `npm.cmd` in the Windows workspace. Do not reuse one
+`node_modules` directory across Windows and WSL: packages such as Rollup install
+platform-specific optional binaries. If you intentionally develop inside WSL,
+open the repository with VS Code's WSL remote and install dependencies from that
+WSL workspace instead.
 
 ## Development loop
 

@@ -383,6 +383,12 @@ class ReviewFilePanel {
       case "addComment":
         await this.store.addComment(message.threadId, message.body);
         return;
+      case "loadCommentReactions":
+        await this.store.loadCommentReactions(message.threadId, message.commentId);
+        return;
+      case "toggleCommentReaction":
+        await this.store.toggleCommentReaction(message.threadId, message.commentId, message.name);
+        return;
       case "editComment":
         await this.store.editComment(message.threadId, message.commentId, message.body);
         return;

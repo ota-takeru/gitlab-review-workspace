@@ -168,6 +168,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       case "openCommitFile": await this.navigator.openCommitDiffFile(message.commitId, message.filePath); return;
       case "openNewChangesFile": await this.navigator.openNewChangesFile(message.filePath); return;
       case "addComment": await this.store.addComment(message.threadId, message.body); return;
+      case "loadCommentReactions": await this.store.loadCommentReactions(message.threadId, message.commentId); return;
+      case "toggleCommentReaction": await this.store.toggleCommentReaction(message.threadId, message.commentId, message.name); return;
       case "addOverviewThread": await this.store.addOverviewThread(message.body, message.mode); return;
       case "setSubmissionMode": this.store.setSubmissionMode(message.mode); return;
       case "publishReviewDraft": await this.store.publishReviewDraft(message.draftId); return;

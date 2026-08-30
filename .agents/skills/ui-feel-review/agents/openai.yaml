@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Feel Review"
+  short_description: "Review repeated UI flow and causal continuity"
+  default_prompt: "Use $ui-feel-review to trace a repeated rendered task and assess state and action-result continuity."

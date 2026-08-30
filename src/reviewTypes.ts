@@ -8,6 +8,25 @@ export interface ReviewComment {
   updatedAt?: string;
   canEdit?: boolean;
   pending?: boolean;
+  reactions?: ReviewReaction[];
+  reactionsLoaded?: boolean;
+  reactionsLoading?: boolean;
+  reactionError?: string;
+}
+
+export interface ReviewReactionUser {
+  id?: string;
+  username?: string;
+  name: string;
+  avatarUrl?: string;
+}
+
+export interface ReviewReaction {
+  name: string;
+  count: number;
+  users: ReviewReactionUser[];
+  currentUserAwardId?: string;
+  pending?: boolean;
 }
 
 export interface ReviewUser {
@@ -101,6 +120,7 @@ export interface ReviewState {
   id: string;
   projectId: string;
   mergeRequestIid: number;
+  currentUserId?: string;
   webUrl?: string;
   diffRefs?: ReviewDiffRefs;
   title: string;
