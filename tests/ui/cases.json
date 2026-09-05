@@ -3,7 +3,7 @@
     "id": "sidebar-ready-dark",
     "surface": "sidebar-review",
     "state": "ready",
-    "designFocus": "MR hierarchy, review progress, and selected unresolved-discussion affordances.",
+    "designFocus": "MR hierarchy, latest-push comparison, and selected unresolved-discussion affordances.",
     "storyId": "review-sidebar--ready-review",
     "theme": "dark",
     "viewport": { "width": 400, "height": 900 },
@@ -13,7 +13,7 @@
       "contentVolume": "medium",
       "disclosure": "mixed",
       "warningsErrors": [],
-      "activeStates": ["partial-progress", "new-changes-information", "changed-files-expanded", "selected-discussion"]
+      "activeStates": ["new-changes-information", "changed-files-expanded", "selected-discussion"]
     },
     "ready": { "selector": ".sidebar-shell #changed-files-content" }
   },
@@ -21,7 +21,7 @@
     "id": "sidebar-ready-light",
     "surface": "sidebar-review",
     "state": "ready",
-    "designFocus": "MR hierarchy, review progress, and selected unresolved-discussion affordances.",
+    "designFocus": "MR hierarchy, latest-push comparison, and selected unresolved-discussion affordances.",
     "storyId": "review-sidebar--ready-review",
     "theme": "light",
     "viewport": { "width": 400, "height": 900 },
@@ -31,7 +31,7 @@
       "contentVolume": "medium",
       "disclosure": "mixed",
       "warningsErrors": [],
-      "activeStates": ["partial-progress", "new-changes-information", "changed-files-expanded", "selected-discussion"]
+      "activeStates": ["new-changes-information", "changed-files-expanded", "selected-discussion"]
     },
     "ready": { "selector": ".sidebar-shell #changed-files-content" }
   },
@@ -50,7 +50,7 @@
       "contentVolume": "high",
       "disclosure": "mixed",
       "warningsErrors": [],
-      "activeStates": ["minimum-sidebar-width", "long-content", "partial-progress", "new-changes-information", "selected-discussion"]
+      "activeStates": ["minimum-sidebar-width", "long-content", "new-changes-information", "selected-discussion"]
     },
     "ready": { "selector": ".sidebar-shell .review-loaded" }
   },
@@ -69,7 +69,7 @@
       "contentVolume": "high",
       "disclosure": "mixed",
       "warningsErrors": [],
-      "activeStates": ["minimum-sidebar-width", "long-content", "partial-progress", "new-changes-information", "selected-discussion"]
+      "activeStates": ["minimum-sidebar-width", "long-content", "new-changes-information", "selected-discussion"]
     },
     "ready": { "selector": ".sidebar-shell .review-loaded" }
   },
@@ -88,7 +88,7 @@
       "contentVolume": "high",
       "disclosure": "expanded",
       "warningsErrors": ["local-target-unavailable", "large-uncommitted-count"],
-      "activeStates": ["changed-files-expanded", "commits-expanded", "threads-expanded", "selected-discussion", "partial-progress"]
+      "activeStates": ["changed-files-expanded", "commits-expanded", "threads-expanded", "selected-discussion"]
     },
     "ready": { "selector": ".sidebar-shell #changed-files-content" }
   },
@@ -107,7 +107,7 @@
       "contentVolume": "high",
       "disclosure": "expanded",
       "warningsErrors": ["local-target-unavailable", "large-uncommitted-count"],
-      "activeStates": ["changed-files-expanded", "commits-expanded", "threads-expanded", "selected-discussion", "partial-progress"]
+      "activeStates": ["changed-files-expanded", "commits-expanded", "threads-expanded", "selected-discussion"]
     },
     "ready": { "selector": ".sidebar-shell #changed-files-content" }
   },
@@ -449,14 +449,14 @@
     "id": "sidebar-empty-review-dark",
     "surface": "sidebar-review",
     "state": "empty-review",
-    "designFocus": "No merge request state with a direct retry action.",
+    "designFocus": "No merge request state with a direct path to My work.",
     "storyId": "review-sidebar--empty-review",
     "theme": "dark",
     "viewport": { "width": 320, "height": 844 },
     "captureMode": "viewport",
     "evidenceLane": "constrained",
     "pairId": "sidebar-empty-review",
-    "stateVector": { "contentVolume": "low", "disclosure": "collapsed", "warningsErrors": ["empty"], "activeStates": ["empty", "retry"] },
+    "stateVector": { "contentVolume": "low", "disclosure": "collapsed", "warningsErrors": [], "activeStates": ["empty", "my-work-navigation"] },
     "ready": { "selector": ".sidebar-shell .gl-empty-state" }
   },
   {
@@ -710,5 +710,89 @@
     "pairId": "commit-diff-retry",
     "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": [], "activeStates": ["pending", "ready", "keyboard-operable"] },
     "ready": { "selector": ".commit-diff-app .diff-card" }
+  },
+  {
+    "id": "sidebar-overview-comment-pending-dark",
+    "surface": "sidebar-review",
+    "state": "overview-comment-pending",
+    "designFocus": "Submitted comment remains visible with an acknowledged pending state and no duplicate action.",
+    "storyId": "review-sidebar--overview-comment-pending",
+    "theme": "dark",
+    "viewport": { "width": 320, "height": 844 },
+    "captureMode": "viewport",
+    "evidenceLane": "constrained",
+    "pairId": "sidebar-overview-comment-pending",
+    "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": [], "activeStates": ["composer-visible", "pending", "draft-retained"] },
+    "ready": { "selector": ".sidebar-shell .mutation-status" }
+  },
+  {
+    "id": "sidebar-overview-comment-pending-light",
+    "surface": "sidebar-review",
+    "state": "overview-comment-pending",
+    "designFocus": "Submitted comment remains visible with an acknowledged pending state and no duplicate action.",
+    "storyId": "review-sidebar--overview-comment-pending",
+    "theme": "light",
+    "viewport": { "width": 320, "height": 844 },
+    "captureMode": "viewport",
+    "evidenceLane": "constrained",
+    "pairId": "sidebar-overview-comment-pending",
+    "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": [], "activeStates": ["composer-visible", "pending", "draft-retained"] },
+    "ready": { "selector": ".sidebar-shell .mutation-status" }
+  },
+  {
+    "id": "sidebar-overview-comment-failed-dark",
+    "surface": "sidebar-review",
+    "state": "overview-comment-failed",
+    "designFocus": "Comment failure keeps the submitted text available with an inline retry path.",
+    "storyId": "review-sidebar--overview-comment-failed",
+    "theme": "dark",
+    "viewport": { "width": 320, "height": 844 },
+    "captureMode": "viewport",
+    "evidenceLane": "constrained",
+    "pairId": "sidebar-overview-comment-failed",
+    "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": ["comment-failure"], "activeStates": ["composer-visible", "error", "draft-retained", "retry"] },
+    "ready": { "selector": ".sidebar-shell [role=alert]" }
+  },
+  {
+    "id": "sidebar-overview-comment-failed-light",
+    "surface": "sidebar-review",
+    "state": "overview-comment-failed",
+    "designFocus": "Comment failure keeps the submitted text available with an inline retry path.",
+    "storyId": "review-sidebar--overview-comment-failed",
+    "theme": "light",
+    "viewport": { "width": 320, "height": 844 },
+    "captureMode": "viewport",
+    "evidenceLane": "constrained",
+    "pairId": "sidebar-overview-comment-failed",
+    "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": ["comment-failure"], "activeStates": ["composer-visible", "error", "draft-retained", "retry"] },
+    "ready": { "selector": ".sidebar-shell [role=alert]" }
+  },
+  {
+    "id": "sidebar-draft-retained-across-revision-dark",
+    "surface": "sidebar-review",
+    "state": "draft-retained-across-revision",
+    "designFocus": "A previous revision draft stays inspectable and copyable after a SHA change without automatic submission.",
+    "storyId": "review-sidebar--draft-retained-across-revision",
+    "theme": "dark",
+    "viewport": { "width": 320, "height": 844 },
+    "captureMode": "viewport",
+    "evidenceLane": "constrained",
+    "pairId": "sidebar-draft-retained-across-revision",
+    "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": ["stale-draft"], "activeStates": ["context-change", "retained-draft", "copy-recovery"] },
+    "ready": { "selector": ".sidebar-shell .retained-drafts" }
+  },
+  {
+    "id": "sidebar-draft-retained-across-revision-light",
+    "surface": "sidebar-review",
+    "state": "draft-retained-across-revision",
+    "designFocus": "A previous revision draft stays inspectable and copyable after a SHA change without automatic submission.",
+    "storyId": "review-sidebar--draft-retained-across-revision",
+    "theme": "light",
+    "viewport": { "width": 320, "height": 844 },
+    "captureMode": "viewport",
+    "evidenceLane": "constrained",
+    "pairId": "sidebar-draft-retained-across-revision",
+    "stateVector": { "contentVolume": "medium", "disclosure": "expanded", "warningsErrors": ["stale-draft"], "activeStates": ["context-change", "retained-draft", "copy-recovery"] },
+    "ready": { "selector": ".sidebar-shell .retained-drafts" }
   }
 ]

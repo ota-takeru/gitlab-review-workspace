@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, watchEffect } from "vue";
 import { maxCommentImageBytes } from "../../../src/commentImageTypes";
 import { renderMarkdown } from "../../../src/markdownRenderer";
+import { sameReviewContext, type ReviewContext } from "../../../src/reviewContext";
 import { commentImageState, isPrivateCommentImagePath, rememberCommentImage, resolveCommentImage, uploadCommentImage } from "../commentImages";
 import GlButton from "./GlButton.vue";
 import GlIconButton from "./GlIconButton.vue";
@@ -12,9 +13,10 @@ const props = withDefaults(defineProps<{
   ariaLabel?: string;
   "aria-label"?: string;
   submitLabel?: string;
+  submitting?: boolean;
   cancelLabel?: string;
   compact?: boolean;
-  projectId?: string;
+  reviewContext?: ReviewContext;
 }>(), { submitLabel: "Comment" });
 const emit = defineEmits<{ submit: []; cancel: [] }>();
 const form = ref<HTMLFormElement>();
@@ -25,6 +27,7 @@ const imagePicker = ref<HTMLInputElement>();
 interface PendingImage {
   id: string;
   file: File;
+  context: ReviewContext;
   preview?: string;
   progress: number;
   status: "preparing" | "uploading" | "uploaded" | "failed";
@@ -35,10 +38,11 @@ interface PendingImage {
 const pendingImages = ref<PendingImage[]>([]);
 let editorValue: string | undefined;
 let pickerRange: Range | undefined;
+let pickerContext: ReviewContext | undefined;
 let plainTextPasteRequested = false;
 const active = computed(() => focused.value || (model.value?.length ?? 0) > 0);
 const uploadBlocked = computed(() => pendingImages.value.some((item) => item.status !== "uploaded"));
-const canSubmit = computed(() => !uploadBlocked.value && Boolean(model.value?.trim()));
+const canSubmit = computed(() => !props.submitting && !uploadBlocked.value && Boolean(model.value?.trim()));
 
 function resizeEditor(): void {
   void nextTick(() => {
@@ -69,8 +73,8 @@ function refreshPrivateEditorImages(): void {
   element.querySelectorAll<HTMLImageElement>("img[data-comment-image-path]").forEach((image) => {
     const imagePath = image.dataset.commentImagePath;
     if (!imagePath || !isPrivateCommentImagePath(imagePath)) return;
-    const state = commentImageState(props.projectId, imagePath);
-    if (state?.status === "idle") resolveCommentImage(props.projectId, imagePath);
+    const state = commentImageState(props.reviewContext, imagePath);
+    if (state?.status === "idle") resolveCommentImage(props.reviewContext, imagePath);
     if (state?.status === "ready" && state.displayUri) image.src = state.displayUri;
     else if (!image.getAttribute("src")) image.alt = "Loading uploaded image";
   });
@@ -156,34 +160,51 @@ function captureRange(): Range | undefined {
   return editor.value.contains(range.commonAncestorContainer) ? range.cloneRange() : undefined;
 }
 
-async function addImage(file: File, range = captureRange()): Promise<void> {
+async function addImage(
+  file: File,
+  range = captureRange(),
+  context = captureImageContext()
+): Promise<void> {
+  if (!context || !sameReviewContext(context, props.reviewContext)) return;
   if (!/^image\/(?:png|jpe?g|gif|webp)$/i.test(file.type)) {
-    pendingImages.value.push({ id: crypto.randomUUID(), file, progress: 0, status: "failed", error: "Only PNG, JPEG, WebP, and GIF images are supported." });
+    pendingImages.value.push({ id: crypto.randomUUID(), file, context, progress: 0, status: "failed", error: "Only PNG, JPEG, WebP, and GIF images are supported." });
     return;
   }
   if (file.size > maxCommentImageBytes) {
-    pendingImages.value.push({ id: crypto.randomUUID(), file, progress: 0, status: "failed", error: "Images must be 10 MiB or smaller." });
+    pendingImages.value.push({ id: crypto.randomUUID(), file, context, progress: 0, status: "failed", error: "Images must be 10 MiB or smaller." });
     return;
   }
   // Keep the same object for the async upload lifecycle, but make mutations
   // observable even though this local reference is not read back through the array.
-  const item = reactive<PendingImage>({ id: crypto.randomUUID(), file, progress: 0, status: "preparing", range });
+  const item = reactive<PendingImage>({ id: crypto.randomUUID(), file, context, progress: 0, status: "preparing", range });
   pendingImages.value.push(item);
 
   try {
     const dataUrl = await fileAsDataUrl(file, (progress) => { item.progress = progress; });
+    if (!sameReviewContext(context, props.reviewContext)) {
+      pendingImages.value = pendingImages.value.filter((candidate) => candidate !== item);
+      return;
+    }
     item.preview = dataUrl;
     item.progress = 100;
     item.status = "uploading";
-    const result = await uploadCommentImage(props.projectId, file.name || "image", file.type, dataUrl.split(",", 2)[1] ?? "");
+    const result = await uploadCommentImage(context, file.name || "image", file.type, dataUrl.split(",", 2)[1] ?? "");
     // The user may remove an in-flight attachment. The Host request cannot be
     // cancelled, but its eventual response must not alter the editor.
     if (!pendingImages.value.includes(item)) return;
-    rememberCommentImage(props.projectId, result.imagePath, result.displayUri);
+    if (!sameReviewContext(context, props.reviewContext)) {
+      pendingImages.value = pendingImages.value.filter((candidate) => candidate !== item);
+      return;
+    }
+    rememberCommentImage(context, result.imagePath, result.displayUri);
     insertUploadedImage(result.markdown, result.imagePath, result.displayUri, item.id, item.range);
     item.imagePath = result.imagePath;
     item.status = "uploaded";
   } catch (error) {
+    if (!sameReviewContext(context, props.reviewContext)) {
+      pendingImages.value = pendingImages.value.filter((candidate) => candidate !== item);
+      return;
+    }
     item.status = "failed";
     item.error = error instanceof Error ? error.message : "Could not upload the image.";
   }
@@ -240,22 +261,30 @@ function rangeAtDrop(event: DragEvent): Range | undefined {
 
 function openImagePicker(): void {
   pickerRange = captureRange();
+  pickerContext = captureImageContext();
+  if (!pickerContext) return;
   imagePicker.value?.click();
 }
 function selectImage(event: Event): void {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
+  const context = pickerContext;
   input.value = "";
-  if (file) void addImage(file, pickerRange);
+  if (file && context && sameReviewContext(context, props.reviewContext)) {
+    void addImage(file, pickerRange, context);
+  }
   pickerRange = undefined;
+  pickerContext = undefined;
 }
 function dropImage(event: DragEvent): void {
   event.preventDefault();
   const file = Array.from(event.dataTransfer?.files ?? []).find((candidate) => candidate.type.startsWith("image/"));
-  if (file) void addImage(file, rangeAtDrop(event));
+  const context = captureImageContext();
+  if (file && context) void addImage(file, rangeAtDrop(event), context);
 }
 function retryImage(item: PendingImage): void {
-  void addImage(item.file, item.range);
+  if (!sameReviewContext(item.context, props.reviewContext)) return;
+  void addImage(item.file, item.range, item.context);
   removeImage(item.id);
 }
 function removeImage(id: string): void {
@@ -360,18 +389,26 @@ watch(model, (value) => {
   hydrateEditor();
 }, { flush: "post" });
 
+watch(() => props.reviewContext, (context) => {
+  pendingImages.value = pendingImages.value.filter((item) => sameReviewContext(item.context, context));
+});
+
 watchEffect(() => {
   // Track resolver state before scheduling the DOM update, so Host replies
   // repaint already-hydrated /uploads images in the rich editor.
   const paths = [...(model.value ?? "").matchAll(/!\[(?:\\.|[^\]\\\n])*\]\(((?:\/uploads\/|https:\/\/[^\s/]+(?:\/[^\s]*)?\/uploads\/)[^\s)]+)\)/gi)].map((match) => match[1]);
   for (const path of paths) {
-    const state = commentImageState(props.projectId, path);
-    if (state?.status === "idle") resolveCommentImage(props.projectId, path);
+    const state = commentImageState(props.reviewContext, path);
+    if (state?.status === "idle") resolveCommentImage(props.reviewContext, path);
     void state?.status;
     void state?.displayUri;
   }
   void nextTick(refreshPrivateEditorImages);
 });
+
+function captureImageContext(): ReviewContext | undefined {
+  return props.reviewContext ? Object.freeze({ ...props.reviewContext }) : undefined;
+}
 
 onMounted(() => {
   window.addEventListener("resize", resizeEditor);
@@ -534,7 +571,7 @@ function escapeMarkdownImageAlt(value: string): string {
     <footer v-if="active">
       <span class="hint">Ctrl/Cmd + Enter</span>
       <GlButton v-if="cancelLabel" size="small" @click="emit('cancel')">{{ cancelLabel }}</GlButton>
-      <GlButton type="submit" variant="confirm" size="small" icon="paper-airplane" :disabled="!canSubmit">{{ submitLabel }}</GlButton>
+      <GlButton type="submit" variant="confirm" size="small" icon="paper-airplane" :disabled="!canSubmit" :loading="submitting">{{ submitting ? 'Sending…' : submitLabel }}</GlButton>
     </footer>
   </form>
 </template>

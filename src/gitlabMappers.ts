@@ -89,6 +89,7 @@ export interface GitLabDiscussionNote {
   system?: boolean;
   resolved?: boolean;
   position?: {
+    head_sha?: string;
     new_path?: string;
     old_path?: string;
     new_line?: number | null;
@@ -167,6 +168,7 @@ export function mapGitLabDiscussions(
         line,
         oldLine: position?.old_line ?? undefined,
         newLine: position?.new_line ?? undefined,
+        ...(position?.head_sha ? { positionHeadSha: position.head_sha } : {}),
         resolved: discussion.resolved ?? resolvedFromNote,
         resolvable: Boolean(discussion.resolvable),
         comments: notes

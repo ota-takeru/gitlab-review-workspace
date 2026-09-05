@@ -70,7 +70,7 @@ test("mapGitLabDiscussions retains file positions and resolved status", () => {
           author: { id: 7, username: "reviewer", avatar_url: "https://gitlab.example.com/uploads/reviewer.png" },
           created_at: "2026-07-10T12:00:00.000Z",
           updated_at: "2026-07-10T12:05:00.000Z",
-          position: { new_path: "src/sidebar.ts", old_path: "src/sidebar.ts", new_line: 37 }
+          position: { new_path: "src/sidebar.ts", old_path: "src/sidebar.ts", new_line: 37, head_sha: "rendered-head" }
         }
       ]
     }
@@ -83,6 +83,7 @@ test("mapGitLabDiscussions retains file positions and resolved status", () => {
       line: 37,
       oldLine: undefined,
       newLine: 37,
+      positionHeadSha: "rendered-head",
       resolved: false,
       resolvable: true,
       comments: [

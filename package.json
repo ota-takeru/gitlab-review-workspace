@@ -2,7 +2,7 @@
   "name": "gitlab-review-workspace",
   "displayName": "GitLab Review Workspace",
   "description": "GitLab merge request review experience with threaded comments, review diffs, and editable local review drafts.",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "publisher": "ota-takeru",
   "repository": {
     "type": "git",
@@ -13,7 +13,7 @@
     "url": "https://github.com/ota-takeru/gitlab-review-workspace/issues"
   },
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.97.0"
   },
   "categories": [
     "Source Control",
@@ -63,6 +63,10 @@
       {
         "command": "gitlabReview.openFileWebview",
         "title": "GitLab Review: Open Review File in Legacy Viewer"
+      },
+      {
+        "command": "gitlabReview.recoverLegacyLocalEdits",
+        "title": "GitLab Review: Recover Local Drafts from Earlier Versions"
       },
       {
         "command": "gitlabReview.nativeComment.submit",
@@ -219,7 +223,7 @@
     "@storybook/vue3-vite": "^10.5.0",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.0.0",
-    "@types/vscode": "^1.95.0",
+    "@types/vscode": "1.97.0",
     "@vitejs/plugin-vue": "^5.2.4",
     "@vitest/browser-playwright": "^4.1.10",
     "concurrently": "^9.2.0",

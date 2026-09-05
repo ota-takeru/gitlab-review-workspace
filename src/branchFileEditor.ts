@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { reviewContextKey, type ReviewContext } from "./reviewContext";
 import { ReviewStore } from "./reviewStore";
 import { BranchFileContent } from "./reviewTypes";
 
@@ -12,27 +13,44 @@ export class BranchFileEditor implements vscode.FileSystemProvider, vscode.Dispo
 
   private readonly files = new Map<string, CachedBranchFile>();
   private readonly onDidChangeFileEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+  private openGeneration = 0;
   readonly onDidChangeFile = this.onDidChangeFileEmitter.event;
 
   constructor(private readonly store: ReviewStore) {}
 
   async open(branch: string, filePath: string): Promise<void> {
+    const generation = ++this.openGeneration;
+    const context = this.store.getReviewContext();
+    if (!context) {
+      void vscode.window.showErrorMessage(`ブランチ上の ${filePath} を開けませんでした。`);
+      return;
+    }
+
+    let uri: vscode.Uri | undefined;
+    let cached: CachedBranchFile | undefined;
     try {
       const file = await this.store.loadBranchFile(branch, filePath);
-      const uri = this.toUri(file);
-      this.files.set(uri.toString(), {
+      this.assertCurrent(context, generation);
+      uri = this.toUri(file, context);
+      cached = {
         contents: new TextEncoder().encode(file.content),
         updatedAt: Date.now()
-      });
+      };
+      this.files.set(uri.toString(), cached);
       this.onDidChangeFileEmitter.fire([{ type: vscode.FileChangeType.Changed, uri }]);
 
       const document = await vscode.workspace.openTextDocument(uri);
+      this.assertCurrent(context, generation);
       const languageDocument = await vscode.languages.setTextDocumentLanguage(document, file.language);
+      this.assertCurrent(context, generation);
       await vscode.window.showTextDocument(languageDocument, {
         preview: true,
         viewColumn: vscode.ViewColumn.One
       });
-    } catch {
+      this.assertCurrent(context, generation);
+    } catch (error) {
+      if (uri && this.files.get(uri.toString()) === cached) this.files.delete(uri.toString());
+      if (error instanceof StaleBranchFileOpenError) return;
       void vscode.window.showErrorMessage(`ブランチ上の ${filePath} を開けませんでした。`);
     }
   }
@@ -76,15 +94,22 @@ export class BranchFileEditor implements vscode.FileSystemProvider, vscode.Dispo
   }
 
   dispose(): void {
+    this.openGeneration += 1;
     this.onDidChangeFileEmitter.dispose();
     this.files.clear();
   }
 
-  private toUri(file: BranchFileContent): vscode.Uri {
+  private assertCurrent(context: ReviewContext, generation: number): void {
+    if (generation !== this.openGeneration) throw new StaleBranchFileOpenError();
+    this.store.assertReviewContext(context);
+  }
+
+  private toUri(file: BranchFileContent, context: ReviewContext): vscode.Uri {
     return vscode.Uri.from({
       scheme: this.scheme,
       authority: file.projectId,
-      path: `/${file.branch}/${file.path}`
+      path: `/${file.branch}/${file.path}`,
+      query: encodeURIComponent(reviewContextKey(context))
     });
   }
 
@@ -97,3 +122,5 @@ export class BranchFileEditor implements vscode.FileSystemProvider, vscode.Dispo
     return file;
   }
 }
+
+class StaleBranchFileOpenError extends Error {}

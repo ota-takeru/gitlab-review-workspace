@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import * as glabCommand from "../glabCommand";
+import { commentImageRequestMatchesReviewContext } from "../commentImageTypes";
+import type { ReviewContext } from "../reviewContext";
 import {
   CommentImageService,
   commentImageCacheKey,
@@ -21,9 +23,33 @@ import {
 const host: ConfiguredCommentImageHost = {
   hostname: "gitlab.example.com",
   host: "gitlab.example.com",
-  origin: "https://gitlab.example.com"
+  origin: "https://gitlab.example.com",
+  instanceUrl: "https://gitlab.example.com"
 };
 const secret = "0123456789abcdef0123456789abcdef";
+const reviewContext: ReviewContext = {
+  instanceUrl: "https://gitlab.example.com",
+  projectId: "group/project",
+  mergeRequestIid: 17,
+  baseSha: "base",
+  startSha: "start",
+  headSha: "head",
+  currentUserId: "7"
+};
+
+test("image request context guard rejects absent, stale, and mismatched project contexts", () => {
+  const request = {
+    type: "resolveCommentImage" as const,
+    requestId: "resolve-context",
+    reviewContext,
+    projectId: reviewContext.projectId,
+    imagePath: `/uploads/${secret}/image.png`
+  };
+  assert.equal(commentImageRequestMatchesReviewContext(request, reviewContext), true);
+  assert.equal(commentImageRequestMatchesReviewContext(request, { ...reviewContext, instanceUrl: "https://other.example.com" }), false);
+  assert.equal(commentImageRequestMatchesReviewContext({ ...request, projectId: "same-numeric-id" }, reviewContext), false);
+  assert.equal(commentImageRequestMatchesReviewContext({ ...request, reviewContext: undefined } as never, reviewContext), false);
+});
 
 test("comment image validation accepts supported magic and rejects MIME mismatches", () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -67,6 +93,10 @@ test("cache keys are host scoped and canonical extension candidates cover JPEG a
   const second = commentImageCacheKey("other.example.com", "4", secret, "image.jpeg");
   const extensionless = commentImageCacheKey("gitlab.example.com", "4", secret, "no-extension");
   assert.notEqual(first, second);
+  assert.notEqual(
+    commentImageCacheKey("https://gitlab.example.com/gitlab-a", "4", secret, "image.jpeg"),
+    commentImageCacheKey("https://gitlab.example.com/gitlab-b", "4", secret, "image.jpeg")
+  );
   assert.deepEqual(
     commentImageCachePaths("cache", "gitlab.example.com", "4", secret, "no-extension").map((value) => value.replace(/\\/g, "/")),
     [`cache/${extensionless}.png`, `cache/${extensionless}.jpg`, `cache/${extensionless}.webp`, `cache/${extensionless}.gif`]
@@ -97,6 +127,7 @@ test("upload uses glab multipart form with a temporary file and caches the valid
     const result = await service.upload({
       type: "uploadCommentImage",
       requestId: "upload-1",
+      reviewContext,
       projectId: "group/project",
       filename: "画像.png",
       mimeType: "image/png",
@@ -139,6 +170,7 @@ test("duplicate resolves share one authenticated binary download and return a pr
     const message = {
       type: "resolveCommentImage" as const,
       requestId: "resolve-1",
+      reviewContext: { ...reviewContext, projectId: "4" },
       projectId: "4",
       imagePath: `/uploads/${secret}/no-extension`
     };

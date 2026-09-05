@@ -43,6 +43,7 @@ export interface ReviewThread {
   line?: number;
   oldLine?: number;
   newLine?: number;
+  positionHeadSha?: string;
   resolved: boolean;
   resolvable?: boolean;
   pending?: boolean;
@@ -118,6 +119,8 @@ export interface LocalEdit {
 
 export interface ReviewState {
   id: string;
+  instanceUrl?: string;
+  projectPath?: string;
   projectId: string;
   mergeRequestIid: number;
   currentUserId?: string;
@@ -159,6 +162,7 @@ export interface FileSummary extends DiffCount {
 }
 
 export interface ReviewOverview {
+  reviewContext?: import("./reviewContext").ReviewContext;
   loadState: ReviewLoadState;
   isRefreshing: boolean;
   errorMessage?: string;

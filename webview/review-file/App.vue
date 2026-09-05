@@ -4,6 +4,7 @@ import { buildSideBySideRows } from "../../src/diffUtils";
 import type { DiffSideBySideRow } from "../../src/diffUtils";
 import { reviewThreadAuthors } from "../../src/reviewTreeUtils";
 import type { ReviewComment, ReviewLine, ReviewSubmissionMode, ReviewThread } from "../../src/reviewTypes";
+import { reviewContextKey, type ReviewContext } from "../../src/reviewContext";
 import type {
   HostMessage,
   ReviewFileHostMessage,
@@ -33,6 +34,7 @@ import GlMarkdown from "../common/components/GlMarkdown.vue";
 import GlReactionBar from "../common/components/GlReactionBar.vue";
 import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
+import { createReviewMutationRequest, createReviewMutationRequestId, type ReviewFileMutationPayload } from "../common/reviewMutations";
 import { vscode } from "../common/vscode";
 
 interface PersistedReviewFileState {
@@ -67,13 +69,36 @@ const collapsedThreads = ref<Record<string, boolean>>({ ...restored.collapsedThr
 const diffScope = ref<GlDiffScope>(restored.diffScope ?? "changes");
 const submissionMode = ref<ReviewSubmissionMode>(restored.submissionMode ?? "comment");
 const resolvedByThread = new Map<string, boolean>();
+type MutationKind = "range" | "reply" | "edit" | "reaction" | "resolve" | "load-reactions" | "open-current" | "clear-local";
+interface PendingMutation {
+  kind: MutationKind;
+  key: string;
+  context: ReviewContext;
+  body?: string;
+  anchorId?: string;
+  threadId?: string;
+  commentId?: string;
+}
+const pendingMutations = new Map<string, PendingMutation>();
+const mutationErrors = ref<Record<string, { message: string; context: ReviewContext }>>({});
+const mutationRevision = ref(0);
 let dragStart = -1;
 let dragEnd = -1;
 let dragging = false;
 let readyRetry: number | undefined;
 let draftPersistTimer: number | undefined;
 let pendingLocalEditSaveRequestId: string | undefined;
+let pendingLocalEditText: string | undefined;
+let pendingLocalEditContext: ReviewContext | undefined;
+let localEditSaveErrorContext: ReviewContext | undefined;
 const maxPersistedEditDraftCharacters = 512_000;
+const canComment = computed(() => state.value?.canComment !== false);
+const visibleLocalEditSaveError = computed(() => {
+  if (!localEditSaveError.value) return undefined;
+  return !localEditSaveErrorContext || sameMutationContext(localEditSaveErrorContext, state.value?.reviewContext)
+    ? localEditSaveError.value
+    : undefined;
+});
 
 const model = computed(() => state.value?.viewModel);
 const newChangesUnavailable = computed(() => {
@@ -248,6 +273,65 @@ function post(message: ReviewFileMessage): void {
   vscode.postMessage(message);
 }
 
+function touchMutations(): void { mutationRevision.value += 1; }
+
+function mutationKey(kind: MutationKind, key: string): string {
+  return `${kind}:${key}`;
+}
+
+function mutationPending(kind: MutationKind, key: string): boolean {
+  void mutationRevision.value;
+  return [...pendingMutations.values()].some((pending) => pending.kind === kind && pending.key === key);
+}
+
+function mutationError(kind: MutationKind, key: string): string | undefined {
+  void mutationRevision.value;
+  const error = mutationErrors.value[mutationKey(kind, key)];
+  return sameMutationContext(state.value?.reviewContext, error?.context) ? error?.message : undefined;
+}
+
+function clearMutationError(kind: MutationKind, key: string): void {
+  delete mutationErrors.value[mutationKey(kind, key)];
+  touchMutations();
+}
+
+function submitMutation<T extends ReviewFileMutationPayload>(
+  payload: T,
+  kind: MutationKind,
+  key: string,
+  details: Omit<PendingMutation, "kind" | "key" | "context"> = {}
+): string | undefined {
+  if (kind !== "open-current" && !canComment.value) {
+    const context = state.value?.reviewContext;
+    if (context) {
+      mutationErrors.value[mutationKey(kind, key)] = {
+        message: state.value?.commentUnavailableReason || "Comments are unavailable for this diff.",
+        context
+      };
+    }
+    touchMutations();
+    return undefined;
+  }
+  const context = state.value?.reviewContext;
+  const request = createReviewMutationRequest(payload, context);
+  if (!request || !context) {
+    if (context) {
+      mutationErrors.value[mutationKey(kind, key)] = {
+        message: state.value?.commentUnavailableReason || "The current merge request is still loading. Refresh it and try again.",
+        context
+      };
+    }
+    touchMutations();
+    return undefined;
+  }
+  if (mutationPending(kind, key)) return undefined;
+  clearMutationError(kind, key);
+  pendingMutations.set(request.requestId, { kind, key, context, ...details });
+  touchMutations();
+  post(request);
+  return request.requestId;
+}
+
 function setDiffScope(next: GlDiffScope): void {
   diffScope.value = next;
   persist();
@@ -413,6 +497,7 @@ function flashAndScroll(element: HTMLElement): void {
 function enterEdit(): void {
   localEditText.value ??= model.value?.editableText ?? "";
   localEditSaveError.value = undefined;
+  localEditSaveErrorContext = undefined;
   persist();
   post({ type: "enterEdit" });
 }
@@ -424,6 +509,7 @@ function cancelEdit(): void {
   if (current !== original && !window.confirm("Discard unsaved local edits?")) return;
   localEditText.value = undefined;
   localEditSaveError.value = undefined;
+  localEditSaveErrorContext = undefined;
   persist();
   post({ type: "cancelEdit" });
 }
@@ -431,12 +517,22 @@ function cancelEdit(): void {
 function saveEdit(): void {
   if (localEditSaving.value) return;
   const text = localEditText.value ?? model.value?.editableText ?? "";
-  const requestId = crypto.randomUUID();
+  const requestId = createReviewMutationRequestId("local-edit");
+  const context = state.value?.reviewContext;
+  if (!context) {
+    localEditSaveError.value = state.value?.commentUnavailableReason || "The current merge request is still loading. Refresh it and try again.";
+    localEditSaveErrorContext = undefined;
+    persist();
+    return;
+  }
   pendingLocalEditSaveRequestId = requestId;
+  pendingLocalEditText = text;
+  pendingLocalEditContext = context;
   localEditSaving.value = true;
   localEditSaveError.value = undefined;
+  localEditSaveErrorContext = context;
   persist();
-  post({ type: "saveLocalEdit", requestId, text });
+  post({ type: "saveLocalEdit", requestId, text, reviewContext: context });
 }
 
 function onEditorKeydown(event: KeyboardEvent): void {
@@ -462,6 +558,7 @@ function setSubmissionMode(mode: ReviewSubmissionMode): void {
 }
 
 function startDrag(event: PointerEvent, index: number): void {
+  if (!canComment.value) return;
   if (event.button !== 0 || (event.target as HTMLElement).closest("button, textarea, form, a")) return;
   event.preventDefault();
   clearSelection();
@@ -486,6 +583,7 @@ function updateSelection(): void {
 }
 
 function openRangeComposer(first: number, last: number): void {
+  if (!canComment.value) return;
   const selectedRows = reviewSideBySideRows.value.slice(Math.min(first, last), Math.max(first, last) + 1);
   const selected = selectedRows.flatMap(reviewLinesInRow);
   const target = [...selected].reverse().find((line) => line.mrLine !== undefined && line.mrLine > 0);
@@ -514,6 +612,7 @@ function finishDrag(): void {
 }
 
 function onRowKeydown(event: KeyboardEvent, index: number): void {
+  if (!canComment.value) return;
   const rows = reviewSideBySideRows.value;
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
@@ -539,21 +638,25 @@ function isSelected(index: number): boolean {
 function submitRange(): void {
   const composer = rangeComposer.value;
   if (!composer?.body.trim()) return;
-  post({
+  submitMutation({
     type: "addThread",
     body: composer.body,
     mrLine: composer.mrLine,
-    oldLine: composer.oldLine
+    oldLine: composer.oldLine,
+    mode: submissionMode.value
+  }, "range", composer.anchorId, {
+    body: composer.body,
+    anchorId: composer.anchorId
   });
-  clearSelection();
 }
 
 function reply(thread: ReviewThread): void {
   const body = replyDrafts.value[thread.id] ?? "";
   if (!body.trim()) return;
-  post({ type: "addComment", threadId: thread.id, body });
-  delete replyDrafts.value[thread.id];
-  persist();
+  submitMutation({ type: "addComment", threadId: thread.id, body }, "reply", thread.id, {
+    body,
+    threadId: thread.id
+  });
 }
 
 function commentKey(threadId: string, commentId: string): string {
@@ -596,17 +699,67 @@ function cancelCommentEdit(threadId: string, comment: ReviewComment): void {
 function clearLocalEdit(): void {
   if (!model.value?.hasLocalEdit) return;
   if (!window.confirm("Discard local changes for this file?")) return;
-  post({ type: "clearLocalEdit" });
+  submitMutation({ type: "clearLocalEdit" }, "clear-local", state.value?.filePath ?? "local-edit");
 }
 
 function submitCommentEdit(threadId: string, comment: ReviewComment): void {
   const key = commentKey(threadId, comment.id);
   const body = editDrafts.value[key] ?? "";
   if (!body.trim()) return;
-  post({ type: "editComment", threadId, commentId: comment.id, body });
-  editingComments.value = editingComments.value.filter((candidate) => candidate !== key);
-  delete editDrafts.value[key];
+  submitMutation({ type: "editComment", threadId, commentId: comment.id, body }, "edit", key, {
+    body,
+    threadId,
+    commentId: comment.id
+  });
+}
+
+function updateReplyDraft(threadId: string, value: string): void {
+  replyDrafts.value[threadId] = value;
+  clearMutationError("reply", threadId);
   persist();
+}
+
+function updateRangeDraft(value: string): void {
+  if (rangeComposer.value) {
+    rangeComposer.value.body = value;
+    clearMutationError("range", rangeComposer.value.anchorId);
+  }
+  persist();
+}
+
+function updateEditDraft(key: string, value: string): void {
+  editDrafts.value[key] = value;
+  clearMutationError("edit", key);
+  persist();
+}
+
+function toggleResolved(thread: ReviewThread): void {
+  submitMutation({ type: "toggleResolved", threadId: thread.id }, "resolve", thread.id, { threadId: thread.id });
+}
+
+function loadCommentReactions(threadId: string, commentId: string): void {
+  submitMutation({ type: "loadCommentReactions", threadId, commentId }, "load-reactions", commentKey(threadId, commentId), {
+    threadId,
+    commentId
+  });
+}
+
+function toggleCommentReaction(threadId: string, commentId: string, name: string): void {
+  submitMutation({ type: "toggleCommentReaction", threadId, commentId, name }, "reaction", `${commentKey(threadId, commentId)}:${name}`, {
+    threadId,
+    commentId
+  });
+}
+
+function openCurrentReviewFile(): void {
+  submitMutation({
+    type: "openCurrentReviewFile",
+    filePath: state.value?.filePath ?? "",
+    line: state.value?.targetLine,
+    threadId: state.value?.targetThreadId
+  }, "open-current", state.value?.filePath ?? "", {
+    threadId: state.value?.targetThreadId
+  });
 }
 
 function edited(comment: ReviewComment): boolean {
@@ -646,19 +799,75 @@ function lineStateLabel(line: ReviewLine): string {
   return "Unchanged line";
 }
 
+function sameMutationContext(context: ReviewContext | undefined, other: ReviewContext | undefined): boolean {
+  return Boolean(context && other && reviewContextKey(context) === reviewContextKey(other));
+}
+
+function handleReviewMutationResult(message: Extract<ReviewFileHostMessage, { type: "reviewMutationResult" }>): void {
+  const pending = pendingMutations.get(message.requestId);
+  if (!pending) return;
+  pendingMutations.delete(message.requestId);
+  const key = mutationKey(pending.kind, pending.key);
+  if (!message.ok) {
+    mutationErrors.value[key] = { message: message.errorMessage, context: pending.context };
+    if (pending.kind === "clear-local") {
+      localEditSaveError.value = message.errorMessage;
+      localEditSaveErrorContext = pending.context;
+    }
+  } else if (pending.kind === "range") {
+    const composer = rangeComposer.value;
+    if (sameMutationContext(state.value?.reviewContext, pending.context)
+        && composer?.anchorId === pending.anchorId
+        && composer?.body === pending.body) {
+      clearSelection();
+    }
+  } else if (pending.kind === "reply" && pending.threadId
+      && sameMutationContext(state.value?.reviewContext, pending.context)
+      && replyDrafts.value[pending.threadId] === pending.body) {
+    delete replyDrafts.value[pending.threadId];
+  } else if (pending.kind === "edit" && pending.threadId && pending.commentId
+      && sameMutationContext(state.value?.reviewContext, pending.context)) {
+    const editKey = commentKey(pending.threadId, pending.commentId);
+    if (editDrafts.value[editKey] === pending.body) {
+      editingComments.value = editingComments.value.filter((candidate) => candidate !== editKey);
+      delete editDrafts.value[editKey];
+    }
+  } else if (pending.kind === "clear-local") {
+    localEditSaveError.value = undefined;
+    localEditSaveErrorContext = undefined;
+  }
+  touchMutations();
+  persist();
+}
+
 function onMessage(event: MessageEvent<HostMessage<ReviewFileViewState, ReviewFileHostMessage>>): void {
   const message = event.data;
+  if (message.type === "reviewMutationResult") {
+    handleReviewMutationResult(message);
+    return;
+  }
   if (message.type === "localEditSaveResult") {
     if (message.requestId !== pendingLocalEditSaveRequestId) return;
     pendingLocalEditSaveRequestId = undefined;
     localEditSaving.value = false;
     if (message.ok) {
-      localEditText.value = undefined;
-      localEditSaveError.value = undefined;
+      const submittedText = pendingLocalEditText;
+      const submittedContext = pendingLocalEditContext;
+      if (submittedText === localEditText.value && sameMutationContext(submittedContext, state.value?.reviewContext)) {
+        localEditText.value = undefined;
+        localEditSaveError.value = undefined;
+        localEditSaveErrorContext = undefined;
+      } else {
+        localEditSaveError.value = "The submitted version was saved. Your newer local draft is still in the editor.";
+        localEditSaveErrorContext = submittedContext;
+      }
     } else {
       localEditSaveError.value = message.errorMessage;
+      localEditSaveErrorContext = pendingLocalEditContext;
       void nextTick(() => editor.value?.focus());
     }
+    pendingLocalEditText = undefined;
+    pendingLocalEditContext = undefined;
     persist();
     return;
   }
@@ -739,11 +948,16 @@ onBeforeUnmount(() => {
         <GlIconButton icon="close" label="Cancel editing" :disabled="localEditSaving" @click="cancelEdit" />
       </template>
     </GlDiffHeader>
+    <div v-if="state.commentUnavailableReason" class="comment-unavailable" role="status">
+      <GlIcon name="warning" :size="13" />
+      <span>{{ state.commentUnavailableReason }}</span>
+      <GlButton v-if="state.stale || state.source === 'commit'" size="small" @click="openCurrentReviewFile">Open current MR diff</GlButton>
+    </div>
     <section class="edit-layout" aria-label="Edit local file">
       <div class="editor-pane">
         <div class="pane-heading">
           <span>Working copy</span>
-          <span v-if="localEditSaveError" class="local-save-state is-danger" role="alert">{{ localEditSaveError }}</span>
+          <span v-if="visibleLocalEditSaveError" class="local-save-state is-danger" role="alert">{{ visibleLocalEditSaveError }}</span>
           <span v-else-if="localEditSaving" class="local-save-state" role="status">Saving local draft…</span>
           <span v-else>Ctrl+S to save</span>
         </div>
@@ -789,7 +1003,7 @@ onBeforeUnmount(() => {
               :edited="edited(comment)"
               :pending="comment.pending"
             >
-              <GlMarkdown :source="comment.body" :project-id="state.projectId" />
+              <GlMarkdown :source="comment.body" :review-context="state.reviewContext" />
               <template #footer>
                 <GlReactionBar
                   :reactions="comment.reactions"
@@ -797,8 +1011,8 @@ onBeforeUnmount(() => {
                   :loading="comment.reactionsLoading"
                   :error="comment.reactionError"
                   :disabled="comment.pending"
-                  @load="post({ type: 'loadCommentReactions', threadId: thread.id, commentId: comment.id })"
-                  @toggle="name => post({ type: 'toggleCommentReaction', threadId: thread.id, commentId: comment.id, name })"
+                  @load="loadCommentReactions(thread.id, comment.id)"
+                  @toggle="name => toggleCommentReaction(thread.id, comment.id, name)"
                 />
               </template>
             </GlComment>
@@ -844,6 +1058,11 @@ onBeforeUnmount(() => {
         </template>
       </template>
     </GlDiffHeader>
+    <div v-if="state.commentUnavailableReason" class="comment-unavailable" role="status">
+      <GlIcon name="warning" :size="13" />
+      <span>{{ state.commentUnavailableReason }}</span>
+      <GlButton v-if="state.stale || state.source === 'commit'" size="small" @click="openCurrentReviewFile">Open current MR diff</GlButton>
+    </div>
 
     <div v-if="state.newChanges" class="version-compare" aria-label="Compare merge request changes">
       <span class="version-compare-label"><GlIcon name="commit" :size="12" />Compare</span>
@@ -978,16 +1197,22 @@ onBeforeUnmount(() => {
           </div>
           <GlCommentForm
             v-model="rangeComposer.body"
+            :submitting="mutationPending('range', rangeComposer.anchorId)"
             class="new-comment-form"
             ariaLabel="New comment"
             placeholder="Write a comment…"
             cancelLabel="Cancel"
             compact
-            :project-id="state?.projectId"
-            @update:modelValue="persist"
+            :review-context="state?.reviewContext"
+            @update:modelValue="updateRangeDraft"
             @submit="submitRange"
             @cancel="clearSelection"
           />
+          <p v-if="mutationPending('range', rangeComposer.anchorId)" class="mutation-status" role="status">Sending…</p>
+          <p v-if="mutationError('range', rangeComposer.anchorId)" class="mutation-error" role="alert">
+            {{ mutationError('range', rangeComposer.anchorId) }}
+            <GlButton size="small" @click="submitRange">Retry</GlButton>
+          </p>
         </div>
 
         <article
@@ -1030,7 +1255,7 @@ onBeforeUnmount(() => {
               :resolved="thread.resolved"
               :pending="thread.pending"
               :resolvable="thread.resolvable !== false"
-              @toggle="post({ type: 'toggleResolved', threadId: thread.id })"
+              @toggle="toggleResolved(thread)"
             />
           </header>
 
@@ -1062,21 +1287,27 @@ onBeforeUnmount(() => {
                   @click.stop="startCommentEdit(thread.id, comment)"
                 />
               </template>
-              <div v-if="!isEditing(thread.id, comment.id)" class="note-body"><GlMarkdown :source="comment.body" :project-id="state?.projectId" /></div>
+              <div v-if="!isEditing(thread.id, comment.id)" class="note-body"><GlMarkdown :source="comment.body" :review-context="state?.reviewContext" /></div>
               <GlCommentForm
                 v-else
                 v-model="editDrafts[commentKey(thread.id, comment.id)]"
+                :submitting="mutationPending('edit', commentKey(thread.id, comment.id))"
                 class="comment-edit-form"
                 ariaLabel="Edit comment"
                 submitLabel="Save changes"
                 cancelLabel="Cancel"
                 compact
-                :project-id="state?.projectId"
+                :review-context="state?.reviewContext"
                 :data-edit-key="commentKey(thread.id, comment.id)"
-                @update:modelValue="persist"
+                @update:modelValue="value => updateEditDraft(commentKey(thread.id, comment.id), value)"
                 @submit="submitCommentEdit(thread.id, comment)"
                 @cancel="cancelCommentEdit(thread.id, comment)"
               />
+              <p v-if="mutationPending('edit', commentKey(thread.id, comment.id))" class="mutation-status" role="status">Saving…</p>
+              <p v-if="mutationError('edit', commentKey(thread.id, comment.id))" class="mutation-error" role="alert">
+                {{ mutationError('edit', commentKey(thread.id, comment.id)) }}
+                <GlButton size="small" @click="submitCommentEdit(thread.id, comment)">Retry</GlButton>
+              </p>
               <template #footer>
                 <GlReactionBar
                   :reactions="comment.reactions"
@@ -1084,8 +1315,8 @@ onBeforeUnmount(() => {
                   :loading="comment.reactionsLoading"
                   :error="comment.reactionError"
                   :disabled="comment.pending"
-                  @load="post({ type: 'loadCommentReactions', threadId: thread.id, commentId: comment.id })"
-                  @toggle="name => post({ type: 'toggleCommentReaction', threadId: thread.id, commentId: comment.id, name })"
+                  @load="loadCommentReactions(thread.id, comment.id)"
+                  @toggle="name => toggleCommentReaction(thread.id, comment.id, name)"
                 />
               </template>
             </GlComment>
@@ -1093,14 +1324,20 @@ onBeforeUnmount(() => {
             <GlCommentForm
               v-if="!thread.pending"
               :model-value="replyDrafts[thread.id] ?? ''"
+              :submitting="mutationPending('reply', thread.id)"
               class="reply-composer"
               ariaLabel="Reply to discussion"
               placeholder="Reply to this discussion…"
               compact
-              :project-id="state?.projectId"
-              @update:modelValue="value => { replyDrafts[thread.id] = value; persist(); }"
+              :review-context="state?.reviewContext"
+              @update:modelValue="value => updateReplyDraft(thread.id, value)"
               @submit="reply(thread)"
             />
+            <p v-if="mutationPending('reply', thread.id)" class="mutation-status" role="status">Sending…</p>
+            <p v-if="mutationError('reply', thread.id)" class="mutation-error" role="alert">
+              {{ mutationError('reply', thread.id) }}
+              <GlButton size="small" @click="reply(thread)">Retry</GlButton>
+            </p>
               </div>
             </div>
           </Transition>
@@ -1136,6 +1373,24 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .edit-root { display: grid; grid-template-rows: auto 1fr; }
+.comment-unavailable {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--gl-spacing-8);
+  min-width: 0;
+  padding: var(--gl-spacing-6) var(--gl-spacing-12);
+  border-bottom: 1px solid var(--gl-border-default);
+  color: var(--gl-feedback-warning);
+  background: color-mix(in srgb, var(--gl-feedback-warning) 7%, var(--gl-surface-raised));
+  font-size: 11px;
+}
+.comment-unavailable > span { min-width: 0; flex: 1; }
+.mutation-status,
+.mutation-error { margin: var(--gl-spacing-4) var(--gl-spacing-12) var(--gl-spacing-8); font-size: 11px; }
+.mutation-status { color: var(--gl-text-subtle); }
+.mutation-error { display: flex; align-items: center; gap: var(--gl-spacing-8); color: var(--gl-feedback-danger); }
+.mutation-error::first-line { overflow-wrap: anywhere; }
 
 .version-compare {
   flex: none;

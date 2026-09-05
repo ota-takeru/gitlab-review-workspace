@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { onMounted } from "vue";
 import type { ReviewFileViewState } from "../../src/webviewProtocol";
 import App from "./App.vue";
@@ -41,7 +41,20 @@ const thread = {
   ]
 };
 
+const reviewContext = {
+  instanceUrl: "https://gitlab.example.com",
+  projectId: "101",
+  mergeRequestIid: 42,
+  baseSha: "0000000000000000000000000000000000000000",
+  startSha: "1111111111111111111111111111111111111111",
+  headSha: "2222222222222222222222222222222222222222"
+} as const;
+
 const state: ReviewFileViewState = {
+  reviewContext,
+  liveReviewContext: reviewContext,
+  stale: false,
+  canComment: true,
   mode: "review",
   canEditLocally: false,
   projectId: "101",
@@ -117,6 +130,22 @@ const sideBySideState: ReviewFileViewState = {
   }
 };
 
+const historicalCommitState: ReviewFileViewState = {
+  ...sideBySideState,
+  source: "commit",
+  stale: false,
+  canComment: false,
+  commentUnavailableReason: "Historical commit diffs are read-only. Open the current MR diff to comment.",
+  commit: {
+    id: "3333333333333333333333333333333333333333",
+    shortId: "33333333",
+    title: "Historical implementation",
+    authorName: "Reviewer One",
+    authoredAt: "2025-12-01T00:00:00.000Z",
+    committedAt: "2025-12-01T00:00:00.000Z"
+  }
+};
+
 const newChangesState: ReviewFileViewState = {
   ...sideBySideState,
   source: "new-changes",
@@ -151,6 +180,19 @@ const editState: ReviewFileViewState = {
   ...state,
   mode: "edit",
   canEditLocally: true
+};
+
+const editableCommentState: ReviewFileViewState = {
+  ...state,
+  mode: "review",
+  canEditLocally: false,
+  viewModel: {
+    ...editState.viewModel!,
+    threads: [{
+      ...thread,
+      comments: [{ ...thread.comments[0]!, canEdit: true }, ...thread.comments.slice(1)]
+    }]
+  }
 };
 
 const ordinaryCommentEditState: ReviewFileViewState = {
@@ -308,7 +350,9 @@ export const ReadyOpenDiscussion: Story = {
       type: "toggleCommentReaction",
       threadId: "discussion-1",
       commentId: "comment-1",
-      name: "thumbsup"
+      name: "thumbsup",
+      requestId: expect.any(String),
+      reviewContext
     });
     const addButtons = canvas.getAllByRole("button", { name: "Add reaction" });
     const addMessageCount = messages.length;
@@ -318,7 +362,9 @@ export const ReadyOpenDiscussion: Story = {
       type: "toggleCommentReaction",
       threadId: "discussion-1",
       commentId: "comment-1",
-      name: "rocket"
+      name: "rocket",
+      requestId: expect.any(String),
+      reviewContext
     });
   }
 };
@@ -364,6 +410,71 @@ export const SideBySideDiff: Story = {
   }
 };
 
+export const RangeCommentMutationLifecycle: Story = {
+  render: () => renderState(state),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const storyWindow = canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] };
+    const messages = storyWindow.__storybookVsCodeMessages ?? [];
+    const row = canvas.getByRole("button", { name: "Merge request addition, line 10" });
+    row.focus();
+    await userEvent.keyboard("{Enter}");
+    const editor = await canvas.findByRole("textbox", { name: "New comment" });
+    const form = editor.closest("form");
+    if (!form) throw new Error("Range composer form was not rendered");
+    const submit = within(form).getByRole("button", { name: "Comment" });
+    await userEvent.type(editor, "Keep the original range draft.");
+
+    const beforeSubmit = messages.length;
+    await userEvent.click(submit);
+    const request = await waitFor(() => {
+      const candidate = findMutationRequest(messages, "addThread", beforeSubmit);
+      if (!candidate) throw new Error("Range comment request was not emitted");
+      return candidate;
+    });
+    await expect(canvas.getByRole("status")).toHaveTextContent("Sending…");
+    await expect(submit).toBeDisabled();
+
+    const pendingMessageCount = messages.length;
+    await userEvent.click(submit);
+    await expect(messages.slice(pendingMessageCount)).toHaveLength(0);
+
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "Keep the newer range draft.");
+    sendMutationResult(storyWindow, request.requestId, { ok: false, errorMessage: "GitLab rejected this discussion." });
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent("GitLab rejected this discussion."));
+    await expect(editor).toHaveTextContent("Keep the newer range draft.");
+
+    const beforeRetry = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
+    const retry = await waitFor(() => {
+      const candidate = findMutationRequest(messages, "addThread", beforeRetry);
+      if (!candidate) throw new Error("Range comment retry was not emitted");
+      return candidate;
+    });
+    await expect(retry.body).toBe("Keep the newer range draft.");
+    sendMutationResult(storyWindow, retry.requestId, { ok: true });
+    await waitFor(() => expect(canvas.queryByRole("textbox", { name: "New comment" })).toBeNull());
+  }
+};
+
+export const HistoricalCommitIsReadOnly: Story = {
+  render: () => renderState(historicalCommitState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Historical commit diffs are read-only. Open the current MR diff to comment.")).toBeVisible();
+    const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+    const before = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Open current MR diff" }));
+    await expect(messages.slice(before)).toContainEqual({
+      type: "openCurrentReviewFile",
+      filePath: "src/review.ts",
+      requestId: expect.any(String),
+      reviewContext
+    });
+  }
+};
+
 export const NewChangesFromLatestPush: Story = {
   render: () => renderState(newChangesState),
   play: async ({ canvasElement }) => {
@@ -390,6 +501,70 @@ export const EditModeShowsAllReplyBodies: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Could we make this branch easier to follow?")).toBeVisible();
     await expect(canvas.getByText("I agree with this suggestion.")).toBeVisible();
+  }
+};
+
+export const ReplyAndEditMutationLifecycle: Story = {
+  render: () => renderState(editableCommentState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const storyWindow = canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] };
+    const messages = storyWindow.__storybookVsCodeMessages ?? [];
+
+    const collapsedDiscussion = canvas.queryByRole("button", { name: "Expand discussion on line 10" });
+    if (collapsedDiscussion) await userEvent.click(collapsedDiscussion);
+    const replyEditor = await canvas.findByRole("textbox", { name: "Reply to discussion" });
+    const replyForm = replyEditor.closest("form");
+    if (!replyForm) throw new Error("Reply composer form was not rendered");
+    await userEvent.type(replyEditor, "Keep this reply after failure.");
+    const beforeReply = messages.length;
+    await userEvent.click(within(replyForm).getByRole("button", { name: "Comment" }));
+    const replyRequest = await waitFor(() => {
+      const candidate = findMutationRequest(messages, "addComment", beforeReply);
+      if (!candidate) throw new Error("Reply request was not emitted");
+      return candidate;
+    });
+    sendMutationResult(storyWindow, replyRequest.requestId, { ok: false, errorMessage: "GitLab rejected this reply." });
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent("GitLab rejected this reply."));
+    await expect(replyEditor).toHaveTextContent("Keep this reply after failure.");
+
+    const beforeReplyRetry = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
+    const replyRetry = await waitFor(() => {
+      const candidate = findMutationRequest(messages, "addComment", beforeReplyRetry);
+      if (!candidate) throw new Error("Reply retry was not emitted");
+      return candidate;
+    });
+    sendMutationResult(storyWindow, replyRetry.requestId, { ok: true });
+    await waitFor(() => expect(replyEditor).not.toHaveTextContent("Keep this reply after failure."));
+
+    await userEvent.click(canvas.getByRole("button", { name: "Edit comment" }));
+    const editEditor = await canvas.findByRole("textbox", { name: "Edit comment" });
+    await userEvent.clear(editEditor);
+    await userEvent.type(editEditor, "Keep this edit after failure.");
+    const editForm = editEditor.closest("form");
+    if (!editForm) throw new Error("Comment edit form was not rendered");
+    const beforeEdit = messages.length;
+    await userEvent.click(within(editForm).getByRole("button", { name: "Save changes" }));
+    const editRequest = await waitFor(() => {
+      const candidate = findMutationRequest(messages, "editComment", beforeEdit);
+      if (!candidate) throw new Error("Edit request was not emitted");
+      return candidate;
+    });
+    sendMutationResult(storyWindow, editRequest.requestId, { ok: false, errorMessage: "GitLab rejected this edit." });
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent("GitLab rejected this edit."));
+    await expect(editEditor).toHaveTextContent("Keep this edit after failure.");
+    await expect(editEditor).toBeVisible();
+
+    const beforeEditRetry = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
+    const editRetry = await waitFor(() => {
+      const candidate = findMutationRequest(messages, "editComment", beforeEditRetry);
+      if (!candidate) throw new Error("Edit retry was not emitted");
+      return candidate;
+    });
+    sendMutationResult(storyWindow, editRetry.requestId, { ok: true });
+    await waitFor(() => expect(canvas.queryByRole("textbox", { name: "Edit comment" })).toBeNull());
   }
 };
 
@@ -448,6 +623,30 @@ export const LargeFileWindow: Story = {
 function codeLine(canvasElement: HTMLElement, text: string): Element | null {
   return Array.from(canvasElement.querySelectorAll("[data-syntax-language]"))
     .find((element) => element.textContent === text) ?? null;
+}
+
+function findMutationRequest(
+  messages: readonly unknown[],
+  type: string,
+  start = 0
+): { type: string; requestId: string; [key: string]: unknown } | undefined {
+  return messages.slice(start).find((message): message is { type: string; requestId: string; [key: string]: unknown } => (
+    typeof message === "object"
+      && message !== null
+      && (message as { type?: unknown }).type === type
+      && typeof (message as { requestId?: unknown }).requestId === "string"
+  ));
+}
+
+function sendMutationResult(
+  storyWindow: Window,
+  requestId: string,
+  result: { ok: true } | { ok: false; errorMessage: string }
+): void {
+  const StoryMessageEvent = (storyWindow as unknown as { MessageEvent: typeof MessageEvent }).MessageEvent;
+  storyWindow.dispatchEvent(new StoryMessageEvent("message", {
+    data: { type: "reviewMutationResult", requestId, ...result }
+  }));
 }
 
 export const FullFileLoading: Story = {

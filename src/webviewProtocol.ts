@@ -13,6 +13,7 @@ import type {
 import type { LocalWorkspaceState } from "./localGitTypes";
 import type { MyWorkState } from "./myWorkTypes";
 import type { CommentImageHostMessage, CommentImageWebviewMessage } from "./commentImageTypes";
+import type { ReviewContext, ReviewMutationResult } from "./reviewContext";
 
 export interface WebviewAuthState {
   phase: "checking" | "available" | "signedOut" | "unavailable";
@@ -30,6 +31,8 @@ export interface BranchTreeState {
 export interface CommitDiffState {
   phase: "hidden" | "loading" | "ready" | "error";
   mrKey?: string;
+  /** Full rendered review revision used to reject an old diff response. */
+  reviewContextKey?: string;
   commitId?: string;
   files: CommitDiffFileSummary[];
   errorMessage?: string;
@@ -48,6 +51,14 @@ export interface SidebarViewState {
 }
 
 export interface ReviewFileViewState {
+  /** The immutable review revision this panel rendered. */
+  reviewContext?: ReviewContext;
+  /** The latest live revision known to the Host, when it differs from the view. */
+  liveReviewContext?: ReviewContext;
+  /** True when the panel is showing a revision that can no longer receive writes. */
+  stale?: boolean;
+  canComment?: boolean;
+  commentUnavailableReason?: string;
   mode: "review" | "edit";
   canEditLocally: boolean;
   projectId?: string;
@@ -79,8 +90,12 @@ export type HostMessage<T, TExtra = never> =
   | { type: "state"; state: T }
   | CommentImageHostMessage
   | TExtra;
-export type SidebarHostMessage = { type: "revealThread"; threadId: string };
+export type ReviewMutationHostMessage = { type: "reviewMutationResult"; requestId: string } & ReviewMutationResult;
+export type ReviewMutationRequest = { requestId: string; reviewContext: ReviewContext };
+export type ReviewMutationMessage<T extends object> = T & ReviewMutationRequest;
+export type SidebarHostMessage = { type: "revealThread"; threadId: string } | ReviewMutationHostMessage;
 export type ReviewFileHostMessage =
+  | ReviewMutationHostMessage
   | { type: "localEditSaveResult"; requestId: string; ok: true }
   | { type: "localEditSaveResult"; requestId: string; ok: false; errorMessage: string };
 export type ReadyMessage = { type: "ready" };
@@ -88,22 +103,22 @@ export type CommitDiffMessage = ReadyMessage | { type: "loadFullFile" };
 
 export type SidebarMessage =
   | ReadyMessage
-  | { type: "openFile"; filePath: string; line?: number; threadId?: string }
+  | ReviewMutationMessage<{ type: "openFile"; filePath: string; line?: number; threadId?: string }>
   | { type: "toggleBranchTree"; branch: string }
   | { type: "closeBranchTree" }
-  | { type: "openBranchFile"; branch: string; filePath: string }
-  | { type: "openCommitFile"; commitId: string; filePath: string }
-  | { type: "openNewChangesFile"; filePath: string }
-  | { type: "addComment"; threadId: string; body: string }
-  | { type: "loadCommentReactions"; threadId: string; commentId: string }
-  | { type: "toggleCommentReaction"; threadId: string; commentId: string; name: string }
-  | { type: "addOverviewThread"; body: string; mode: ReviewSubmissionMode }
+  | ReviewMutationMessage<{ type: "openBranchFile"; branch: string; filePath: string }>
+  | ReviewMutationMessage<{ type: "openCommitFile"; commitId: string; filePath: string }>
+  | ReviewMutationMessage<{ type: "openNewChangesFile"; filePath: string }>
+  | ReviewMutationMessage<{ type: "addComment"; threadId: string; body: string }>
+  | ReviewMutationMessage<{ type: "loadCommentReactions"; threadId: string; commentId: string }>
+  | ReviewMutationMessage<{ type: "toggleCommentReaction"; threadId: string; commentId: string; name: string }>
+  | ReviewMutationMessage<{ type: "addOverviewThread"; body: string; mode: ReviewSubmissionMode }>
   | { type: "setSubmissionMode"; mode: ReviewSubmissionMode }
-  | { type: "publishReviewDraft"; draftId: string }
-  | { type: "submitReview" }
-  | { type: "markReviewComplete" }
-  | { type: "editComment"; threadId: string; commentId: string; body: string }
-  | { type: "toggleResolved"; threadId: string }
+  | ReviewMutationMessage<{ type: "publishReviewDraft"; draftId: string }>
+  | ReviewMutationMessage<{ type: "submitReview" }>
+  | ReviewMutationMessage<{ type: "markReviewComplete" }>
+  | ReviewMutationMessage<{ type: "editComment"; threadId: string; commentId: string; body: string }>
+  | ReviewMutationMessage<{ type: "toggleResolved"; threadId: string }>
   | { type: "setThreadExpanded"; threadId: string; expanded: boolean }
   | { type: "login" }
   | { type: "refreshAuth" }
@@ -129,13 +144,14 @@ export type ReviewFileMessage =
   | { type: "setReviewRange"; range: "all" | "new" }
   | { type: "enterEdit" }
   | { type: "cancelEdit" }
-  | { type: "saveLocalEdit"; requestId: string; text: string }
-  | { type: "clearLocalEdit" }
-  | { type: "addComment"; threadId: string; body: string }
-  | { type: "loadCommentReactions"; threadId: string; commentId: string }
-  | { type: "toggleCommentReaction"; threadId: string; commentId: string; name: string }
-  | { type: "editComment"; threadId: string; commentId: string; body: string }
-  | { type: "toggleResolved"; threadId: string }
-  | { type: "addThread"; body: string; mrLine: number; oldLine?: number; mode?: ReviewSubmissionMode }
+  | ReviewMutationMessage<{ type: "saveLocalEdit"; text: string }>
+  | ReviewMutationMessage<{ type: "clearLocalEdit" }>
+  | ReviewMutationMessage<{ type: "addComment"; threadId: string; body: string }>
+  | ReviewMutationMessage<{ type: "loadCommentReactions"; threadId: string; commentId: string }>
+  | ReviewMutationMessage<{ type: "toggleCommentReaction"; threadId: string; commentId: string; name: string }>
+  | ReviewMutationMessage<{ type: "editComment"; threadId: string; commentId: string; body: string }>
+  | ReviewMutationMessage<{ type: "toggleResolved"; threadId: string }>
+  | ReviewMutationMessage<{ type: "addThread"; body: string; mrLine: number; oldLine?: number; mode?: ReviewSubmissionMode }>
+  | ReviewMutationMessage<{ type: "openCurrentReviewFile"; filePath: string; line?: number; threadId?: string }>
   | { type: "setSubmissionMode"; mode: ReviewSubmissionMode }
   | CommentImageWebviewMessage;

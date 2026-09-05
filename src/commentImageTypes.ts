@@ -1,3 +1,5 @@
+import { sameReviewContext, type ReviewContext } from "./reviewContext";
+
 export const commentImageMimeTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 export type CommentImageMimeType = typeof commentImageMimeTypes[number];
 
@@ -6,6 +8,7 @@ export const maxCommentImageBytes = 10 * 1024 * 1024;
 export interface UploadCommentImageMessage {
   type: "uploadCommentImage";
   requestId: string;
+  reviewContext: ReviewContext;
   projectId: string;
   filename: string;
   mimeType: CommentImageMimeType;
@@ -15,6 +18,7 @@ export interface UploadCommentImageMessage {
 export interface ResolveCommentImageMessage {
   type: "resolveCommentImage";
   requestId: string;
+  reviewContext: ReviewContext;
   projectId: string;
   imagePath: string;
 }
@@ -51,4 +55,14 @@ export type CommentImageHostMessage =
 
 export function isCommentImageMimeType(value: string): value is CommentImageMimeType {
   return (commentImageMimeTypes as readonly string[]).includes(value.toLowerCase());
+}
+
+export function commentImageRequestMatchesReviewContext(
+  message: CommentImageWebviewMessage,
+  context: ReviewContext | undefined
+): boolean {
+  const requestContext = (message as CommentImageWebviewMessage & { reviewContext?: ReviewContext }).reviewContext;
+  return Boolean(requestContext
+    && message.projectId === requestContext.projectId
+    && sameReviewContext(requestContext, context));
 }

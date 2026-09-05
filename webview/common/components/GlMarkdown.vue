@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watchEffect } from "vue";
 import { renderMarkdown } from "../../../src/markdownRenderer";
+import type { ReviewContext } from "../../../src/reviewContext";
 import { commentImageState, isPrivateCommentImagePath, resolveCommentImage } from "../commentImages";
 
-const props = defineProps<{ source: string; projectId?: string }>();
+const props = defineProps<{ source: string; reviewContext?: ReviewContext }>();
 const container = ref<HTMLElement>();
 const lightboxUri = ref<string>();
 const lightboxAlt = ref("Comment image");
@@ -16,8 +17,8 @@ const rendered = computed(() => renderMarkdown(props.source));
 watchEffect(() => {
   if (!shouldResolveImages.value) return;
   for (const path of privatePaths.value) {
-    const state = commentImageState(props.projectId, path);
-    if (state?.status === "idle") resolveCommentImage(props.projectId, path);
+    const state = commentImageState(props.reviewContext, path);
+    if (state?.status === "idle") resolveCommentImage(props.reviewContext, path);
     // Access state fields so DOM updates when a Host response arrives.
     void state?.status;
     void state?.displayUri;
@@ -39,7 +40,7 @@ function updateImages(): void {
       image.dataset.lightboxImage = "true";
       return;
     }
-    const state = commentImageState(props.projectId, path);
+    const state = commentImageState(props.reviewContext, path);
     const existing = image.nextElementSibling;
     if (existing?.classList.contains("image-state")) existing.remove();
     if (state?.status === "ready" && state.displayUri) {
@@ -84,7 +85,7 @@ function onClick(event: MouseEvent): void {
   if (!(target instanceof Element)) return;
   const retry = target.closest<HTMLButtonElement>("button[data-comment-image-retry]");
   if (retry) {
-    resolveCommentImage(props.projectId, retry.dataset.commentImageRetry ?? "", true);
+    resolveCommentImage(props.reviewContext, retry.dataset.commentImageRetry ?? "", true);
     return;
   }
   const image = target.closest<HTMLImageElement>("img[data-lightbox-image]");

@@ -11,11 +11,11 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 - 変更ファイルと差分統計をツリー表示
 - MR全体またはコミット単位で変更を確認
 - 新しいpushを検出し、前回のheadから追加された変更だけを比較
-- コミット差分もレビュー差分と同じファイルビューアで選択・コメント
+- コミット差分を閲覧し、現在のMR差分へ戻ってコメント
 - 差分行のクリック・ドラッグ選択からディスカッションを作成
 - VS Code標準diff editorでMR差分を開き、Comment APIからディスカッションを作成・返信
 - コメントの返信、編集、Resolve/Reopen
-- Changed filesをパスと状態（新規push・未確認・確認済み・未解決・ローカル編集）で絞り込み
+- Changed filesをパスと状態（新規push・未解決・ローカル編集）で絞り込み
 - MR内のレビューコメントを本文・投稿者・ファイルパスで検索
 - GitLab Todo通知から対象MRへ移動
 - ソース/ターゲットブランチのファイルツリーを閲覧
@@ -24,18 +24,25 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 
 ## 画面構成
 
-- **Sidebar**: MR概要、変更ファイル、コミット、レビュースレッド、通知
-- **Review file panel**: MR差分・コミット差分、ローカル差分、インラインディスカッション、ローカル編集
-- **VS Code diff editor（試験導入）**: 標準のコードナビゲーションとComment APIによるインラインディスカッション
+- **My work**: 自分の作業一覧からレビューするMRを選択
+- **Sidebar**: 選択したMRの変更ファイル、コミット、レビュースレッドを移動
+- **VS Code diff editor**: 主なレビュー画面。標準のコードナビゲーションとComment APIによるインラインディスカッション
+- **Review file panel（Legacy Viewer）**: MR差分・コミット差分、ローカル差分、インラインディスカッション、ローカル編集
 - **Branch file editor**: GitLab上のブランチファイルを読み取り専用で表示
 
 サイドバーの変更ファイルまたはレビュースレッドを選ぶと、標準diff editorで対象ファイルを開き、スレッドの行までスクロールします。従来のReview file panelも残してあり、`GitLab Review: Open Review File in Legacy Viewer`から開けます。
 
 標準diff editorのコメント入力ではMarkdownを利用できます。画像は入力欄への貼り付けでGitLabへアップロードしてMarkdownを挿入するほか、`Attach Image and Comment`でファイルを選択し、現在の本文と画像をまとめて投稿できます。
 
+異なるMRや差分版の入力を保持していて貼り付け先を確定できない場合、画像貼り付けは無効になります。その場合は投稿先の入力欄で`Attach Image and Comment`を使用してください。
+
+表示中の差分は接続先・MR・SHAに固定されます。接続先や差分が変わった場合は古い入力からの投稿を止め、本文を残します。過去コミットは閲覧用で、現在のMR差分を開いてから新規コメントを作成します。レビュー進捗の割合や確認済み管理は現在の画面には表示しません。
+
+旧バージョンのホスト未分離キャッシュは自動移行せず、MRを再取得します。保存済みの旧ローカル編集は削除しません。`GitLab Review: Recover Local Drafts from Earlier Versions`で内容を開き、対象を確認してコピーできます。
+
 ## 必要環境
 
-- VS Code 1.95以降
+- VS Code 1.97以降
 - Node.jsとnpm
 - [GitLab CLI (`glab`)](https://gitlab.com/gitlab-org/cli)
 - `glab auth login`済みのGitLabアカウント
@@ -76,7 +83,7 @@ VS Codeでこのフォルダを開き、`Run and Debug`から`Run Extension`を�
 | `gitlabReview.projectId` | 空 | 初期表示するプロジェクトIDまたはURLエンコード済みパス |
 | `gitlabReview.mergeRequestIid` | 空 | 初期表示するMR IID |
 
-`projectId`と`mergeRequestIid`を両方設定しない場合は、更新日時が最も新しい自分のopen MRを初期表示します。
+保存済みの選択も`projectId`・`mergeRequestIid`の指定もない場合は、`Open My work`から対象MRを選択します。
 
 `gitlabReview.gitlabBaseUrl`を設定しない場合は、`glab auth status --all`で認証済みのホストを自動検出します。複数のホストがある場合は、ワークスペースのGitリモートと一致するホストを優先します。必要に応じて、`https://gitlab.example.com:8443/gitlab`のようなURLを明示設定することもできます。
 

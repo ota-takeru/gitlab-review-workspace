@@ -6,18 +6,26 @@ import { getGitLabHostname } from "./glabAuthUtils";
 import { normalizeGitLabRemoteUrl } from "./localGitUtils";
 import { applyMyWorkSourceResults, bucketMyWorkItems, comparisonHasChanges, dedupeMyWorkItems, selectCandidateBranches, type MyWorkSourceCache } from "./myWorkService";
 import { emptyMyWorkState, type MyWorkItem, type MyWorkMergeRequestCandidate, type MyWorkSource, type MyWorkSourceItem, type MyWorkState } from "./myWorkTypes";
+import { normalizeInstanceUrl } from "./reviewContext";
 
 const execFileAsync = promisify(execFile);
 const SOURCES: readonly Exclude<MyWorkSource, "candidates">[] = ["todo", "assigned_to_me", "reviews_for_me", "created_by_me"];
+const ALL_SOURCES: readonly MyWorkSource[] = [...SOURCES, "candidates"];
 const CACHE_PREFIX = "gitlabReview.cache.myWork.";
 
 export class MyWorkStore implements vscode.Disposable {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
-  private readonly sourceCache: MyWorkSourceCache;
-  private candidateCache: MyWorkMergeRequestCandidate[];
+  private sourceCache: MyWorkSourceCache = emptySourceCache();
+  private candidateCache: MyWorkMergeRequestCandidate[] = [];
   private state: MyWorkState;
   private disposed = false;
-  private refreshPromise?: Promise<void>;
+  private connection?: MyWorkConnection;
+  private connectionGeneration = 0;
+  private refreshPromise?: {
+    instanceUrl: string;
+    generation: number;
+    promise: Promise<void>;
+  };
 
   readonly onDidChange = this.onDidChangeEmitter.event;
 
@@ -26,15 +34,12 @@ export class MyWorkStore implements vscode.Disposable {
     private readonly baseUrlProvider: () => string = () =>
       vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
   ) {
-    this.sourceCache = Object.fromEntries(SOURCES.map((source) => [source,
-      this.context.workspaceState.get<MyWorkSourceItem[]>(`${CACHE_PREFIX}${source}`) ?? []
-    ])) as MyWorkSourceCache;
-    this.candidateCache = this.context.workspaceState.get<MyWorkMergeRequestCandidate[]>(`${CACHE_PREFIX}candidates`) ?? [];
-    const items = [...dedupeMyWorkItems(Object.values(this.sourceCache).flat()), ...this.candidateCache];
-    this.state = items.length ? toState("ready", items, [], this.context.workspaceState.get<string>(`${CACHE_PREFIX}lastSuccessfulAt`)) : emptyMyWorkState;
+    this.state = emptyMyWorkState;
+    this.resetConnection();
   }
 
   getState(): MyWorkState {
+    this.ensureConnectionScope();
     return {
       ...this.state,
       buckets: {
@@ -48,15 +53,34 @@ export class MyWorkStore implements vscode.Disposable {
 
   refresh(): Promise<void> {
     if (this.disposed) return Promise.resolve();
-    if (this.refreshPromise) return this.refreshPromise;
-    this.refreshPromise = this.performRefresh().finally(() => { this.refreshPromise = undefined; });
-    return this.refreshPromise;
+    const instanceUrl = this.ensureConnectionScope();
+    if (!instanceUrl) return Promise.resolve();
+
+    if (this.refreshPromise
+      && this.refreshPromise.instanceUrl === instanceUrl
+      && this.refreshPromise.generation === this.connectionGeneration) {
+      return this.refreshPromise.promise;
+    }
+
+    const generation = this.connectionGeneration;
+    const promise = this.performRefresh(instanceUrl, generation).finally(() => {
+      if (this.refreshPromise?.promise === promise) this.refreshPromise = undefined;
+    });
+    this.refreshPromise = { instanceUrl, generation, promise };
+    return promise;
   }
 
-  private async performRefresh(): Promise<void> {
+  /** Rebind My Work to the currently configured GitLab instance, if it changed. */
+  resetConnection(): void {
+    this.ensureConnectionScope();
+  }
+
+  private async performRefresh(instanceUrl: string, generation: number): Promise<void> {
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
     this.state = toState("loading", allCachedItems(this.sourceCache, this.candidateCache), [], this.state.lastSuccessfulAt);
     this.onDidChangeEmitter.fire();
-    const client = this.getClient();
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
+    const client = this.getClient(instanceUrl);
     const requests: Record<Exclude<MyWorkSource, "candidates">, Promise<MyWorkSourceItem[]>> = {
       todo: client.listMyWorkTodos(),
       assigned_to_me: client.listMyWorkMergeRequests("assigned_to_me"),
@@ -65,8 +89,12 @@ export class MyWorkStore implements vscode.Disposable {
     };
     const candidateRequest = settle(this.refreshCandidates(client));
     const results = await Promise.all(SOURCES.map(async (source) => ({ source, result: await settle(requests[source]) })));
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
     const sourceUpdate = applyMyWorkSourceResults(this.sourceCache, results);
-    await Promise.all(sourceUpdate.updatedSources.map((source) => this.persist(`${CACHE_PREFIX}${source}`, this.sourceCache[source])));
+    await Promise.all(sourceUpdate.updatedSources.map((source) =>
+      this.persistScoped(instanceUrl, generation, source, this.sourceCache[source])
+    ));
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
 
     // Primary work is useful as soon as the four source requests finish. Keep
     // candidate discovery inside this refresh, but do not make the first
@@ -75,10 +103,12 @@ export class MyWorkStore implements vscode.Disposable {
     if (!this.disposed) this.onDidChangeEmitter.fire();
 
     const candidateResult = await candidateRequest;
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
     if (candidateResult.ok) {
       this.candidateCache = candidateResult.value;
-      await this.persist(`${CACHE_PREFIX}candidates`, this.candidateCache);
+      await this.persistScoped(instanceUrl, generation, "candidates", this.candidateCache);
     }
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
     const failedSources: MyWorkSource[] = [...sourceUpdate.failures, ...(candidateResult.ok ? [] : ["candidates" as const])];
     const items = allCachedItems(this.sourceCache, this.candidateCache);
     const allPrimarySourcesFailed = sourceUpdate.failures.length === SOURCES.length;
@@ -86,7 +116,10 @@ export class MyWorkStore implements vscode.Disposable {
       ? (allPrimarySourcesFailed && items.length === 0 ? "error" : "partial")
       : "ready";
     const lastSuccessfulAt = failedSources.length === 0 ? new Date().toISOString() : this.state.lastSuccessfulAt;
-    if (lastSuccessfulAt && failedSources.length === 0) await this.persist(`${CACHE_PREFIX}lastSuccessfulAt`, lastSuccessfulAt);
+    if (lastSuccessfulAt && failedSources.length === 0) {
+      await this.persistScoped(instanceUrl, generation, "lastSuccessfulAt", lastSuccessfulAt);
+    }
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
     this.state = toState(phase, items, failedSources, lastSuccessfulAt);
     if (!this.disposed) this.onDidChangeEmitter.fire();
   }
@@ -94,12 +127,44 @@ export class MyWorkStore implements vscode.Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.connectionGeneration += 1;
+    this.refreshPromise = undefined;
     this.onDidChangeEmitter.dispose();
   }
 
-  private getClient(): GitLabReviewClient {
-    const baseUrl = this.baseUrlProvider();
-    return new GitLabReviewClient(getGitLabHostname(baseUrl) ?? "gitlab.com");
+  private ensureConnectionScope(): string | undefined {
+    const next = resolveConnection(this.baseUrlProvider);
+    if (this.connection?.signature === next.signature) return this.connection.instanceUrl;
+
+    this.connection = next;
+    this.connectionGeneration += 1;
+    this.refreshPromise = undefined;
+    this.sourceCache = emptySourceCache();
+    this.candidateCache = [];
+
+    if (next.instanceUrl) {
+      this.sourceCache = loadSourceCache(this.context, next.instanceUrl);
+      this.candidateCache = readCache(this.context, cacheKey(next.instanceUrl, "candidates"), [] as MyWorkMergeRequestCandidate[]);
+      const items = allCachedItems(this.sourceCache, this.candidateCache);
+      const lastSuccessfulAt = readCache(this.context, cacheKey(next.instanceUrl, "lastSuccessfulAt"), undefined as string | undefined);
+      this.state = items.length ? toState("ready", items, [], lastSuccessfulAt) : emptyMyWorkState;
+    } else {
+      this.state = unavailableState();
+    }
+    this.onDidChangeEmitter.fire();
+    return next.instanceUrl;
+  }
+
+  private isCurrentRefresh(instanceUrl: string, generation: number): boolean {
+    return !this.disposed
+      && this.ensureConnectionScope() === instanceUrl
+      && this.connectionGeneration === generation;
+  }
+
+  private getClient(instanceUrl: string): GitLabReviewClient {
+    const hostname = getGitLabHostname(instanceUrl);
+    if (!hostname) throw new Error("Invalid GitLab instance URL.");
+    return new GitLabReviewClient(hostname);
   }
 
   private async refreshCandidates(client: GitLabReviewClient): Promise<MyWorkMergeRequestCandidate[]> {
@@ -155,9 +220,51 @@ export class MyWorkStore implements vscode.Disposable {
     }));
   }
 
-  private async persist(key: string, value: unknown): Promise<void> {
-    await Promise.resolve(this.context.workspaceState.update(key, value)).catch(() => undefined);
+  private async persistScoped(instanceUrl: string, generation: number, suffix: MyWorkCacheSuffix, value: unknown): Promise<void> {
+    if (!this.isCurrentRefresh(instanceUrl, generation)) return;
+    await Promise.resolve(this.context.workspaceState.update(cacheKey(instanceUrl, suffix), value)).catch(() => undefined);
   }
+}
+
+type MyWorkCacheSuffix = MyWorkSource | "lastSuccessfulAt";
+
+interface MyWorkConnection {
+  signature: string;
+  instanceUrl?: string;
+}
+
+function resolveConnection(baseUrlProvider: () => string): MyWorkConnection {
+  let rawBaseUrl = "";
+  try {
+    rawBaseUrl = baseUrlProvider().trim();
+    const instanceUrl = normalizeInstanceUrl(rawBaseUrl);
+    if (!getGitLabHostname(instanceUrl)) throw new Error("Invalid GitLab instance URL.");
+    return { signature: `valid:${instanceUrl}`, instanceUrl };
+  } catch {
+    return { signature: `invalid:${rawBaseUrl}` };
+  }
+}
+
+function cacheKey(instanceUrl: string, suffix: MyWorkCacheSuffix): string {
+  return `${CACHE_PREFIX}${encodeURIComponent(instanceUrl)}.${suffix}`;
+}
+
+function loadSourceCache(context: vscode.ExtensionContext, instanceUrl: string): MyWorkSourceCache {
+  return Object.fromEntries(SOURCES.map((source) => [source,
+    readCache(context, cacheKey(instanceUrl, source), [] as MyWorkSourceItem[])
+  ])) as MyWorkSourceCache;
+}
+
+function emptySourceCache(): MyWorkSourceCache {
+  return Object.fromEntries(SOURCES.map((source) => [source, []])) as unknown as MyWorkSourceCache;
+}
+
+function readCache<T>(context: vscode.ExtensionContext, key: string, fallback: T): T {
+  return context.workspaceState.get<T>(key) ?? fallback;
+}
+
+function unavailableState(): MyWorkState {
+  return { ...emptyMyWorkState, phase: "error", failedSources: [...ALL_SOURCES] };
 }
 
 function allCachedItems(sourceCache: MyWorkSourceCache, candidates: readonly MyWorkMergeRequestCandidate[]): MyWorkItem[] {

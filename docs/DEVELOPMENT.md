@@ -48,6 +48,18 @@ Do not modify the bundled `media/webview/*.js` or `media/webview/style.css` dire
 5. Providers and panel managers translate store state into typed Webview state.
 6. Vue apps send typed user actions back through `src/webviewProtocol.ts`.
 
+### Review identity and mutation lifecycle
+
+- `reviewContext.ts` binds rendered input to the normalized instance URL (including port and subpath), project, MR IID, diff base/start/head SHAs, and current user. Validate this context both at message receipt and immediately before executing a queued mutation.
+- `ReviewStore` serializes refreshes and mutations. Optimistic state belongs to the captured review object; asynchronous completions must never mutate a replacement MR or instance. A successful refresh invalidates mutable branch caches.
+- Webview composers use request IDs and explicit success/failure replies. Preserve text while pending and on failure; clear only the successfully submitted value. Keep drafts bound to their original context after navigation or refresh.
+- Native review documents retain immutable SHA content. Historical comparisons cannot create line comments; latest-push comments use the full MR's line mapping. A newer diff requires opening the current MR before writing from an old editor.
+- Native submission commands must reject on failure or cancellation. VS Code clears the reply input after a fulfilled command; returning a failure value alone does not preserve it ([VS Code 1.97 reply action lifecycle](https://github.com/microsoft/vscode/blob/1.97.0/src/vs/workbench/contrib/comments/browser/commentReply.ts#L253-L270)).
+- Review and My work persistence is namespaced by instance. Legacy unscoped caches are left untouched and are not automatically attributed to a host; reload the MR after upgrading. The `Recover Local Drafts from Earlier Versions` command opens a local copy for manual recovery without posting or migrating it. Local repository matching uses the source project URL, including fork identity, rather than a numeric GitLab project ID.
+- VS Code 1.97 is the minimum runtime and the exact development type version, matching the stable document-paste API used by native comments.
+
+The native diff is the primary review surface; My work selects work and the Sidebar navigates it. Retain the legacy viewer until native local-edit workflows and the host-level comment/image failure cases have equivalent validation. Review progress UI is intentionally omitted; opening a file is not an acknowledgement that it was reviewed.
+
 ## Change routing
 
 | Change | Start here | Also inspect |

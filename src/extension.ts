@@ -7,7 +7,7 @@ import { LocalGitService } from "./localGitService";
 import { MyWorkStore } from "./myWorkStore";
 import { NativeReviewEditor } from "./nativeReviewEditor";
 import { ReviewFilePanelManager } from "./reviewFilePanel";
-import { ReviewStore } from "./reviewStore";
+import { REVIEW_CACHE_KEYS, ReviewStore } from "./reviewStore";
 import { SidebarProvider } from "./sidebarProvider";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -35,14 +35,19 @@ export function activate(context: vscode.ExtensionContext): void {
     void sidebar.revealThread(threadId);
   });
   const authListener = glabAuth.onDidChangeState((state) => {
+    store.resetConnection();
+    myWork.resetConnection();
     if (state.phase === "available") {
       void store.refresh();
-    } else if (state.phase === "signedOut") {
-      void commentImages.clearCache().catch(() => undefined);
+    } else {
+      store.invalidateAuthentication();
+      if (state.phase === "signedOut") void commentImages.clearCache().catch(() => undefined);
     }
   });
   const imageCacheConfigurationListener = vscode.workspace.onDidChangeConfiguration((event) => {
     if (event.affectsConfiguration("gitlabReview.gitlabBaseUrl")) {
+      store.resetConnection();
+      myWork.resetConnection();
       void commentImages.clearCache().catch(() => undefined);
       void glabAuth.refreshStatus();
     }
@@ -107,6 +112,20 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     ),
     vscode.commands.registerCommand("gitlabReview.login", () => glabAuth.startLogin()),
+    vscode.commands.registerCommand("gitlabReview.recoverLegacyLocalEdits", async () => {
+      // Old records have no trustworthy host identity. Offer a local copy for
+      // manual recovery without assigning them to the currently selected MR.
+      const drafts = context.workspaceState.get<Record<string, unknown>>(REVIEW_CACHE_KEYS.localEdits);
+      if (!drafts || Object.keys(drafts).length === 0) {
+        void vscode.window.showInformationMessage("No local drafts from an earlier version were found in this workspace.");
+        return;
+      }
+      const document = await vscode.workspace.openTextDocument({
+        language: "json",
+        content: JSON.stringify({ note: "Legacy local drafts: GitLab instance is unknown. Copy the desired editedText into the correct review manually.", drafts }, null, 2)
+      });
+      await vscode.window.showTextDocument(document, { preview: false });
+    }),
     vscode.commands.registerCommand("gitlabReview.refreshAuth", () => glabAuth.refreshStatus()),
     vscode.commands.registerCommand("gitlabReview.refreshReview", () => store.refresh())
   );

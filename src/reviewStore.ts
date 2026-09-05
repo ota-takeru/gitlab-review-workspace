@@ -42,6 +42,8 @@ import {
   RepositoryTreeEntry
 } from "./reviewTypes";
 import type { MergeRequestWorkspaceAssociation } from "./localGitTypes";
+import { contextForReview, normalizeInstanceUrl, reviewContextKey, reviewIdentityKey, sameReviewContext, type ReviewContext, type ReviewMutationResult } from "./reviewContext";
+import { instanceStorage } from "./reviewStorage";
 
 export const REVIEW_CACHE_KEYS = {
   localEdits: "gitlabReview.localEdits.v2",
@@ -116,20 +118,25 @@ interface CachedCommitFileContents {
 export class ReviewStore {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   private state?: ReviewState;
-  private loadState: ReviewLoadState;
+  private loadState: ReviewLoadState = "loading";
   private isRefreshing = false;
   private errorMessage?: string;
-  private threadSortOrder: ReviewThreadSortOrder;
-  private submissionMode: ReviewSubmissionMode;
+  private threadSortOrder: ReviewThreadSortOrder = "open-first";
+  private submissionMode: ReviewSubmissionMode = "comment";
+  private instanceUrl = "";
+  private storage!: Pick<vscode.Memento, "get" | "update">;
+  private liveContext?: ReviewContext;
+  private operationQueue: Promise<unknown> = Promise.resolve();
+  private branchCacheGeneration = 0;
   private selectedReference?: MergeRequestReference;
   private lastLoadedReference?: MergeRequestReference;
   private readonly reviewStateCache = new Map<string, ReviewState>();
   private readonly clients = new Map<string, GitLabReviewClient>();
-  private readonly reviewProgress: ReviewProgressByMergeRequest;
+  private reviewProgress: ReviewProgressByMergeRequest = {};
   private refreshGeneration = 0;
   private readonly refreshLoads = new Map<string, Promise<void>>();
-  private localEdits: LocalEditsByMergeRequest;
-  private workspaceAssociations: WorkspaceAssociations;
+  private localEdits: LocalEditsByMergeRequest = {};
+  private workspaceAssociations: WorkspaceAssociations = {};
   private readonly branchTreeCache = new Map<string, RepositoryTreeEntry[]>();
   private readonly branchFileCache = new Map<string, BranchFileContent>();
   private readonly branchTreeCacheTimes = new Map<string, number>();
@@ -167,11 +174,16 @@ export class ReviewStore {
     private readonly baseUrlProvider: () => string = () =>
       vscode.workspace.getConfiguration("gitlabReview").get<string>("gitlabBaseUrl", "https://gitlab.com")
   ) {
+    this.instanceUrl = this.configuredInstance();
+    this.storage = instanceStorage(context.workspaceState, this.instanceUrl);
+    this.hydrateStorage();
+  }
+
+  private hydrateStorage(): void {
     const cachedState = normalizeCachedReviewState(
-      this.context.workspaceState.get<unknown>(REVIEW_CACHE_KEYS.lightweightReviewState)
-      ?? this.context.workspaceState.get<unknown>(REVIEW_CACHE_KEYS.reviewState)
+      this.storage.get<unknown>(REVIEW_CACHE_KEYS.lightweightReviewState)
     );
-    this.state = cachedState
+    this.state = cachedState?.instanceUrl === this.instanceUrl
       ? {
           ...cachedState,
           commits: cachedState.commits ?? [],
@@ -184,15 +196,15 @@ export class ReviewStore {
         }
       : undefined;
     this.threadSortOrder = normalizeThreadSortOrder(
-      this.context.workspaceState.get<string>(REVIEW_CACHE_KEYS.threadSortOrder)
+      this.storage.get<string>(REVIEW_CACHE_KEYS.threadSortOrder)
     );
     this.submissionMode = normalizeSubmissionMode(
-      this.context.workspaceState.get<string>(REVIEW_CACHE_KEYS.submissionMode)
+      this.storage.get<string>(REVIEW_CACHE_KEYS.submissionMode)
     );
     this.reviewProgress = normalizeReviewProgressRecords(
-      this.context.workspaceState.get<unknown>(REVIEW_CACHE_KEYS.reviewProgress)
+      this.storage.get<unknown>(REVIEW_CACHE_KEYS.reviewProgress)
     );
-    this.selectedReference = this.context.workspaceState.get<MergeRequestReference>(
+    this.selectedReference = this.storage.get<MergeRequestReference>(
       REVIEW_CACHE_KEYS.selectedMergeRequest
     );
     this.lastLoadedReference = this.state
@@ -204,10 +216,10 @@ export class ReviewStore {
       this.cacheReviewState(this.state);
     }
     this.localEdits =
-      this.context.workspaceState.get<LocalEditsByMergeRequest>(REVIEW_CACHE_KEYS.localEdits) ?? {};
+      this.storage.get<LocalEditsByMergeRequest>(REVIEW_CACHE_KEYS.localEdits) ?? {};
     this.workspaceAssociations =
-      this.context.workspaceState.get<WorkspaceAssociations>(REVIEW_CACHE_KEYS.workspaceAssociations) ?? {};
-    const cachedNewChanges = this.context.workspaceState.get<ReviewUpdateRange>(REVIEW_CACHE_KEYS.newChanges);
+      this.storage.get<WorkspaceAssociations>(REVIEW_CACHE_KEYS.workspaceAssociations) ?? {};
+    const cachedNewChanges = this.storage.get<ReviewUpdateRange>(REVIEW_CACHE_KEYS.newChanges);
     this.newChanges = cachedNewChanges && this.state?.diffRefs?.headSha === cachedNewChanges.toSha
       && this.state.projectId === cachedNewChanges.projectId
       && this.state.mergeRequestIid === cachedNewChanges.mergeRequestIid
@@ -216,19 +228,19 @@ export class ReviewStore {
     this.hydrateMap(
       this.branchTreeCache,
       this.branchTreeCacheTimes,
-      this.context.workspaceState.get<CacheEntry<RepositoryTreeEntry[]>[]>(REVIEW_CACHE_KEYS.branchTrees) ?? [],
+      this.storage.get<CacheEntry<RepositoryTreeEntry[]>[]>(REVIEW_CACHE_KEYS.branchTrees) ?? [],
       cacheLimits.branchTrees
     );
     this.hydrateMap(
       this.branchFileCache,
       this.branchFileCacheTimes,
-      this.context.workspaceState.get<CacheEntry<BranchFileContent>[]>(REVIEW_CACHE_KEYS.branchFiles) ?? [],
+      this.storage.get<CacheEntry<BranchFileContent>[]>(REVIEW_CACHE_KEYS.branchFiles) ?? [],
       cacheLimits.branchFiles
     );
     this.hydrateMap(
       this.commitDiffCache,
       this.commitDiffCacheTimes,
-      this.context.workspaceState.get<CacheEntry<CommitDiffFile[]>[]>(REVIEW_CACHE_KEYS.commitDiffs) ?? [],
+      this.storage.get<CacheEntry<CommitDiffFile[]>[]>(REVIEW_CACHE_KEYS.commitDiffs) ?? [],
       cacheLimits.commitDiffs
     );
     this.trimCommitDiffCharacters();
@@ -236,6 +248,7 @@ export class ReviewStore {
   }
 
   getOverview(): ReviewOverview {
+    this.resetConnection();
     if (this.overviewCache?.revision === this.overviewRevision) {
       return this.overviewCache.value;
     }
@@ -257,6 +270,7 @@ export class ReviewStore {
     );
 
     const value: ReviewOverview = {
+      reviewContext: this.getReviewContext(),
       loadState: this.loadState,
       isRefreshing: this.isRefreshing,
       errorMessage: this.errorMessage,
@@ -281,6 +295,102 @@ export class ReviewStore {
     };
     this.overviewCache = { revision: this.overviewRevision, value };
     return value;
+  }
+
+  getReviewContext(): ReviewContext | undefined {
+    const current = contextForReview(this.state);
+    return this.instanceUrl === this.configuredInstance() && sameReviewContext(current, this.liveContext)
+      ? current
+      : undefined;
+  }
+
+  getProjectIdentity(): string | undefined {
+    if (this.instanceUrl !== this.configuredInstance()) return undefined;
+    return this.state?.projectPath;
+  }
+
+  assertReviewContext(expected: ReviewContext | undefined): void {
+    if (!sameReviewContext(expected, this.getReviewContext())) {
+      throw new Error("The GitLab instance, merge request, or diff changed. Open the current review and retry; your draft has been kept.");
+    }
+  }
+
+  invalidateAuthentication(): void {
+    this.liveContext = undefined;
+    this.clients.clear();
+    this.refreshGeneration += 1;
+    this.refreshLoads.clear();
+    this.isRefreshing = false;
+    this.emitChange();
+  }
+
+  /** Invalidate immediately, before authentication or any new network request. */
+  resetConnection(): void {
+    const next = this.configuredInstance();
+    if (next === this.instanceUrl) return;
+    this.instanceUrl = next;
+    this.storage = instanceStorage(this.context.workspaceState, next);
+    this.refreshGeneration += 1;
+    this.branchCacheGeneration += 1;
+    this.liveContext = undefined;
+    this.operationQueue = Promise.resolve();
+    this.isRefreshing = false;
+    this.errorMessage = undefined;
+    this.reviewStateCache.clear();
+    this.clients.clear();
+    for (const cache of [this.refreshLoads, this.branchTreeCache, this.branchFileCache,
+      this.branchTreeCacheTimes, this.branchFileCacheTimes, this.branchTreeLoads, this.branchFileLoads,
+      this.commitDiffCache, this.commitDiffCacheTimes, this.commitDiffLoads, this.commitFileContentCache,
+      this.commitFileContentLoads, this.comparisonFileContentCache, this.comparisonFileContentLoads,
+      this.comparisonLoads, this.reviewFileContentCache, this.reviewFileContentLoads,
+      this.reviewFileContentErrors, this.reviewLineCache, this.reviewLineLoads, this.reactionLoads]) cache.clear();
+    this.reactionMutations.clear();
+    this.reviewLineFailures.clear();
+    this.reviewFileContentCharacters = 0;
+    this.reviewLineCharacters = 0;
+    this.hydrateStorage();
+    this.emitChange();
+  }
+
+  private configuredInstance(): string {
+    try { return normalizeInstanceUrl(this.baseUrlProvider()); }
+    catch { return ""; }
+  }
+
+  private assertSnapshot(review: ReviewState): void {
+    if (this.configuredInstance() !== review.instanceUrl || !sameReviewContext(contextForReview(review), contextForReview(this.state))) {
+      throw new Error("The selected review changed while loading. Open the current review and retry.");
+    }
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationQueue.then(operation, operation);
+    this.operationQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  private runMutation(
+    expected: ReviewContext | undefined,
+    operation: (review: ReviewState, client: GitLabReviewClient) => Promise<void>
+  ): Promise<ReviewMutationResult> {
+    // Validate both at receipt and execution: a queued refresh can change the SHA.
+    try { this.assertReviewContext(expected); }
+    catch (error) { return Promise.resolve({ ok: false, errorMessage: error instanceof Error ? error.message : "Review unavailable." }); }
+    return this.enqueue(async () => {
+      let review: ReviewState | undefined;
+      try {
+        this.assertReviewContext(expected);
+        review = this.state!;
+        const client = this.getClient();
+        await operation(review, client);
+        if (this.state === review && this.instanceUrl === this.configuredInstance()) this.persistReviewState();
+        return { ok: true } as const;
+      } catch (error) {
+        return { ok: false, errorMessage: error instanceof Error ? error.message : "GitLab could not save this change. Your draft has been kept." } as const;
+      } finally {
+        if (this.state === review && this.instanceUrl === this.configuredInstance()) this.emitChange();
+      }
+    });
   }
 
   getThreadDetails(threadIds: readonly string[]): ReviewThread[] {
@@ -335,7 +445,7 @@ export class ReviewStore {
   async rememberWorkspaceAssociation(association: MergeRequestWorkspaceAssociation): Promise<void> {
     const key = workspaceAssociationKey(association.projectId, association.mergeRequestIid);
     this.workspaceAssociations[key] = { ...association };
-    await this.context.workspaceState.update(REVIEW_CACHE_KEYS.workspaceAssociations, this.workspaceAssociations);
+    await this.storage.update(REVIEW_CACHE_KEYS.workspaceAssociations, this.workspaceAssociations);
   }
 
   getFileViewModel(filePath: string, options: ReviewFileViewOptions = {}): FileReviewViewModel | undefined {
@@ -421,16 +531,15 @@ export class ReviewStore {
     const existing = this.reviewFileContentLoads.get(cacheKey);
     if (existing) return existing;
 
-    const reviewId = review.id;
     this.reviewFileContentErrors.delete(cacheKey);
     const load = this.getClient().loadMergeRequestFileContents(review, file)
       .then((contents) => {
-        if (this.state?.id !== reviewId) throw new Error("The selected merge request changed while loading the file.");
+        this.assertSnapshot(review);
         const threads = this.getThreadsForFile(filePath);
         const localEdit = this.getLocalEdit(review.id, filePath);
         return buildReviewLinesAsync(contents.oldText, contents.mrText, localEdit?.editedText, threads)
           .then((lines) => {
-            if (this.state?.id !== reviewId) throw new Error("The selected merge request changed while calculating the diff.");
+            this.assertSnapshot(review);
             this.cacheReviewFileContents(cacheKey, contents);
             this.cacheReviewLines(this.reviewLineCacheKey(review, file, true, localEdit, threads), lines);
             this.reviewFileContentErrors.delete(cacheKey);
@@ -438,7 +547,7 @@ export class ReviewStore {
           });
       })
       .catch((error: unknown) => {
-        if (this.state?.id === reviewId) {
+        if (sameReviewContext(contextForReview(this.state), contextForReview(review))) {
           const state = error instanceof GitLabFileContentError ? error.code : "error";
           this.reviewFileContentErrors.set(cacheKey, {
             state: state === "unavailable" ? "error" : state,
@@ -453,6 +562,7 @@ export class ReviewStore {
   }
 
   async refresh(): Promise<void> {
+    this.resetConnection();
     const reference = this.getSelectedReference();
     const cacheKey = reference ? reviewStateCacheKey(reference.projectId, reference.iid) : undefined;
     if (cacheKey) {
@@ -460,7 +570,11 @@ export class ReviewStore {
       if (existing) return existing;
     }
 
-    const load = this.performRefresh(reference);
+    const generation = ++this.refreshGeneration;
+    const instanceUrl = this.instanceUrl;
+    this.isRefreshing = true;
+    this.emitChange();
+    const load = this.enqueue(() => this.performRefresh(reference, generation, instanceUrl));
     if (!cacheKey) return load;
 
     this.refreshLoads.set(cacheKey, load);
@@ -475,8 +589,8 @@ export class ReviewStore {
     return load;
   }
 
-  private async performRefresh(reference: MergeRequestReference | undefined): Promise<void> {
-    const generation = ++this.refreshGeneration;
+  private async performRefresh(reference: MergeRequestReference | undefined, generation: number, instanceUrl: string): Promise<void> {
+    if (generation !== this.refreshGeneration || instanceUrl !== this.configuredInstance()) return;
     this.isRefreshing = true;
     if (!this.state) {
       this.loadState = "loading";
@@ -501,9 +615,19 @@ export class ReviewStore {
             ? previousState.commits ?? []
             : [];
           const loadedState = await client.loadMergeRequest(reference, fallbackCommits, previousState?.draftNotes ?? []);
-          if (generation !== this.refreshGeneration) return;
+          if (generation !== this.refreshGeneration || instanceUrl !== this.configuredInstance()) return;
+          loadedState.instanceUrl = instanceUrl;
+          loadedState.id = reviewIdentityKey({ instanceUrl, projectId: loadedState.projectId, mergeRequestIid: loadedState.mergeRequestIid });
           const newChangesToHydrate = this.updateNewChanges(previousState, loadedState);
           this.state = loadedState;
+          this.liveContext = contextForReview(loadedState);
+          this.branchCacheGeneration += 1;
+          this.branchTreeCache.clear();
+          this.branchFileCache.clear();
+          this.branchTreeCacheTimes.clear();
+          this.branchFileCacheTimes.clear();
+          this.persistBestEffort(REVIEW_CACHE_KEYS.branchTrees, []);
+          this.persistBestEffort(REVIEW_CACHE_KEYS.branchFiles, []);
           this.lastLoadedReference = reference;
           this.cacheReviewState(this.state);
           this.loadState = "ready";
@@ -511,7 +635,7 @@ export class ReviewStore {
           this.persistReviewState();
           if (newChangesToHydrate) void this.hydrateNewChangesPaths(newChangesToHydrate);
         } catch {
-          if (generation !== this.refreshGeneration) return;
+          if (generation !== this.refreshGeneration || instanceUrl !== this.configuredInstance()) return;
           this.state = previousState;
           this.lastLoadedReference = previousState ? reference : undefined;
           this.loadState = previousState ? "ready" : "error";
@@ -520,13 +644,13 @@ export class ReviewStore {
       }
 
     } catch {
-      if (generation !== this.refreshGeneration) return;
+      if (generation !== this.refreshGeneration || instanceUrl !== this.configuredInstance()) return;
       this.state = previousState;
       this.lastLoadedReference = previousState && reference ? reference : undefined;
       this.loadState = previousState ? "ready" : "error";
       this.errorMessage = "GitLab の MR を読み込めませんでした。キャッシュを表示しています。";
     } finally {
-      if (generation === this.refreshGeneration) {
+      if (generation === this.refreshGeneration && instanceUrl === this.configuredInstance()) {
         this.isRefreshing = false;
         this.emitChange();
       }
@@ -534,6 +658,7 @@ export class ReviewStore {
   }
 
   async selectMergeRequest(projectId: string, iid: number): Promise<void> {
+    this.resetConnection();
     if (!projectId || !Number.isInteger(iid) || iid < 1) {
       return;
     }
@@ -548,6 +673,7 @@ export class ReviewStore {
       this.refreshLoads.clear();
     }
     this.state = cachedState;
+    this.liveContext = undefined;
     if (this.newChanges && (this.newChanges.projectId !== projectId || this.newChanges.mergeRequestIid !== iid)) {
       this.setNewChanges(undefined);
     }
@@ -562,7 +688,7 @@ export class ReviewStore {
 
   async setThreadSortOrder(order: ReviewThreadSortOrder): Promise<void> {
     this.threadSortOrder = normalizeThreadSortOrder(order);
-    await this.context.workspaceState.update(REVIEW_CACHE_KEYS.threadSortOrder, this.threadSortOrder);
+    await this.storage.update(REVIEW_CACHE_KEYS.threadSortOrder, this.threadSortOrder);
     this.emitChange();
   }
 
@@ -600,6 +726,7 @@ export class ReviewStore {
     let load: Promise<RepositoryTreeEntry[]>;
     load = this.getClient().listRepositoryTree(review.projectId, branch)
       .then((entries) => {
+        this.assertSnapshot(review);
         const boundedEntries = entries.slice(0, cacheLimits.branchTreeEntries);
         this.setLimitedCache(
           this.branchTreeCache,
@@ -624,7 +751,7 @@ export class ReviewStore {
       throw new Error("The commit is not part of the current merge request.");
     }
 
-    const cacheKey = `${review.projectId}:${commitId}`;
+    const cacheKey = `${review.instanceUrl}:${review.projectId}:${commitId}`;
     const cached = this.commitDiffCache.get(cacheKey);
     if (cached) {
       this.commitDiffCacheTimes.set(cacheKey, Date.now());
@@ -638,6 +765,7 @@ export class ReviewStore {
     let load: Promise<CommitDiffFile[]>;
     load = this.getClient().loadCommitDiff(review.projectId, commitId)
       .then((files) => {
+        this.assertSnapshot(review);
         this.setLimitedCache(
           this.commitDiffCache,
           this.commitDiffCacheTimes,
@@ -661,7 +789,7 @@ export class ReviewStore {
     if (!review || !review.commits.some((commit) => commit.id === commitId)) {
       throw new Error("The commit is not part of the current merge request.");
     }
-    const cacheKey = commitFileContentKey(review.projectId, commitId, file);
+    const cacheKey = `${review.instanceUrl}:${commitFileContentKey(review.projectId, commitId, file)}`;
     const cached = this.commitFileContentCache.get(cacheKey);
     if (cached) {
       cached.updatedAt = Date.now();
@@ -673,13 +801,15 @@ export class ReviewStore {
     let load: Promise<CommitFileContents>;
     load = this.getClient().loadCommitFileContents(review.projectId, commitId, file)
       .then(async (contents) => {
+        this.assertSnapshot(review);
         this.cacheCommitFileContents(cacheKey, contents);
         const threads = this.getThreadsForFile(file.path);
         const threadLayout = threads
           .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
           .join("|");
         const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
-        this.cacheReviewLines(`commit:${commitId}:${file.path}:full:${threadLayout}`, lines);
+        this.assertSnapshot(review);
+        this.cacheReviewLines(`commit:${review.id}:${commitId}:${file.path}:full:${threadLayout}`, lines);
         return contents;
       })
       .finally(() => {
@@ -716,7 +846,7 @@ export class ReviewStore {
     if (!review || this.newChanges?.fromSha !== context.range.fromSha || this.newChanges.toSha !== context.range.toSha) {
       throw new Error("The new changes comparison is no longer current.");
     }
-    const cacheKey = comparisonFileContentKey(
+    const cacheKey = `${review.instanceUrl}:` + comparisonFileContentKey(
       review.projectId,
       context.range.fromSha,
       context.range.toSha,
@@ -743,13 +873,15 @@ export class ReviewStore {
       context.file
     )
       .then(async (contents) => {
+        this.assertSnapshot(review);
         this.cacheComparisonFileContents(cacheKey, contents);
         const threads = this.getThreadsForFile(context.file.path);
         const threadLayout = threads
           .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
           .join("|");
         const lines = await buildReviewLinesAsync(contents.oldText, contents.newText, undefined, threads);
-        this.cacheReviewLines(`commit:compare:${context.range.fromSha}:${context.range.toSha}:${context.file.path}:full:${threadLayout}`, lines);
+        this.assertSnapshot(review);
+        this.cacheReviewLines(`commit:${review.id}:compare:${context.range.fromSha}:${context.range.toSha}:${context.file.path}:full:${threadLayout}`, lines);
         return contents;
       })
       .finally(() => {
@@ -804,7 +936,7 @@ export class ReviewStore {
     const threadLayout = threads
       .map((thread) => `${thread.id}:${thread.oldLine ?? ""}:${thread.newLine ?? thread.line ?? ""}`)
       .join("|");
-    const lineKey = `commit:${context.commit.id}:${context.file.path}:${context.contents ? "full" : "patch"}:${threadLayout}`;
+    const lineKey = `commit:${this.state?.id}:${context.commit.id}:${context.file.path}:${context.contents ? "full" : "patch"}:${threadLayout}`;
     let allLines = this.reviewLineCache.get(lineKey)?.lines;
     let contentMode: FileReviewViewModel["contentMode"] = context.contents ? "full" : "patch";
     if (!allLines) {
@@ -879,6 +1011,7 @@ export class ReviewStore {
     let load: Promise<BranchFileContent>;
     load = this.getClient().readRepositoryFile(review.projectId, branch, filePath)
       .then((file) => {
+        this.assertSnapshot(review);
         if (file.content.length > cacheLimits.branchFileCharacters) return file;
         this.setLimitedCache(
           this.branchFileCache,
@@ -898,451 +1031,288 @@ export class ReviewStore {
     return load;
   }
 
-  async addComment(threadId: string, body: string): Promise<void> {
-    const review = this.state;
-    const thread = review?.threads.find((item) => item.id === threadId);
-    const trimmed = body.trim();
-    if (!review || !thread || thread.pending || trimmed.length === 0) {
-      return;
-    }
-
-    const pendingComment = {
-      id: pendingId("comment"),
-      author: "you",
-      body: trimmed,
-      createdAt: new Date().toISOString(),
-      canEdit: true,
-      pending: true
-    };
-    thread.comments.push(pendingComment);
-    thread.pending = true;
-    this.emitChange();
-
-    try {
-      const confirmedComment = await this.getClient().addReply(review, threadId, trimmed);
-      const index = thread.comments.findIndex((comment) => comment.id === pendingComment.id);
-      if (index >= 0) {
-        thread.comments[index] = confirmedComment;
-      }
-      thread.pending = false;
-      this.persistReviewState();
+  addComment(threadId: string, body: string, expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const thread = review.threads.find((item) => item.id === threadId);
+      const trimmed = requireCommentBody(body);
+      if (!thread || thread.pending) throw new Error("This discussion is no longer available. Your reply has been kept.");
+      const pendingComment: ReviewComment = {
+        id: pendingId("comment"), author: "you", body: trimmed,
+        createdAt: new Date().toISOString(), canEdit: true, pending: true
+      };
+      thread.comments.push(pendingComment);
+      thread.pending = true;
       this.emitChange();
-    } catch {
-      const index = thread.comments.findIndex((comment) => comment.id === pendingComment.id);
-      if (index >= 0) {
-        thread.comments.splice(index, 1);
-      }
-      thread.pending = false;
-      this.emitChange();
-      void vscode.window.showErrorMessage("GitLab への返信を追加できませんでした。");
-    }
+      try {
+        const confirmed = await client.addReply(review, threadId, trimmed);
+        const index = thread.comments.indexOf(pendingComment);
+        if (index >= 0) thread.comments[index] = confirmed;
+      } catch (error) {
+        thread.comments = thread.comments.filter((comment) => comment !== pendingComment);
+        throw error;
+      } finally { thread.pending = false; }
+    });
   }
 
   async loadCommentReactions(threadId: string, commentId: string): Promise<void> {
+    const expected = this.getReviewContext();
+    if (!expected) return;
+    return this.enqueue(async () => {
+      if (!sameReviewContext(expected, this.getReviewContext())) return;
+      await this.loadCommentReactionsSnapshot(threadId, commentId);
+    });
+  }
+
+  private async loadCommentReactionsSnapshot(threadId: string, commentId: string): Promise<void> {
     const review = this.state;
+    const context = this.getReviewContext();
     const comment = this.findComment(threadId, commentId);
-    if (!review || !comment || comment.pending || comment.reactionsLoaded || comment.reactionsLoading) return;
-
-    const key = `${review.id}:${commentId}`;
-    const existingLoad = this.reactionLoads.get(key);
-    if (existingLoad) return existingLoad;
-
+    if (!review || !context || !comment || comment.pending || comment.reactionsLoaded || comment.reactionsLoading) return;
+    const key = JSON.stringify([review.id, commentId]);
+    const existing = this.reactionLoads.get(key);
+    if (existing) return existing;
     comment.reactionsLoading = true;
     comment.reactionError = undefined;
     this.emitChange();
-
     const load = this.getClient().listCommentReactions(review, commentId)
       .then((reactions) => {
-        if (this.state?.id !== review.id) return;
-        const current = this.findComment(threadId, commentId);
-        if (!current) return;
-        current.reactions = reactions;
-        current.reactionsLoaded = true;
-        current.reactionsLoading = false;
-        current.reactionError = undefined;
+        if (this.state !== review || !sameReviewContext(context, this.getReviewContext())) return;
+        comment.reactions = reactions;
+        comment.reactionsLoaded = true;
         this.persistReviewState();
-        this.emitChange();
       })
       .catch(() => {
-        if (this.state?.id !== review.id) return;
-        const current = this.findComment(threadId, commentId);
-        if (!current) return;
-        current.reactionsLoading = false;
-        current.reactionError = "リアクションを読み込めませんでした。";
-        this.emitChange();
+        if (this.state === review) comment.reactionError = "Could not load reactions.";
       })
-      .finally(() => this.reactionLoads.delete(key));
+      .finally(() => {
+        comment.reactionsLoading = false;
+        if (this.reactionLoads.get(key) === load) this.reactionLoads.delete(key);
+        if (this.state === review) this.emitChange();
+      });
     this.reactionLoads.set(key, load);
     return load;
   }
 
-  async toggleCommentReaction(threadId: string, commentId: string, name: string): Promise<void> {
-    const normalizedName = normalizeReactionName(name);
-    let review = this.state;
-    let comment = this.findComment(threadId, commentId);
-    if (!review || !comment || comment.pending) return;
-
-    if (!comment.reactionsLoaded) {
-      await this.loadCommentReactions(threadId, commentId);
-      review = this.state;
-      comment = this.findComment(threadId, commentId);
-    }
-    if (!review || !comment || !comment.reactionsLoaded || comment.pending) return;
-
-    const mutationKey = `${review.id}:${commentId}:${normalizedName}`;
-    if (this.reactionMutations.has(mutationKey)) return;
-
-    const previous = cloneReactions(comment.reactions ?? []);
-    const existing = comment.reactions?.find((reaction) => reaction.name === normalizedName);
-    const awardId = existing?.currentUserAwardId;
-    comment.reactions = optimisticallyToggleReaction(
-      comment.reactions ?? [],
-      normalizedName,
-      review.currentUserId,
-      Boolean(awardId)
-    );
-    comment.reactionError = undefined;
-    this.reactionMutations.add(mutationKey);
-    this.emitChange();
-
-    try {
-      if (awardId) {
-        await this.getClient().removeCommentReaction(review, commentId, awardId);
-      } else {
-        const added = await this.getClient().addCommentReaction(review, commentId, normalizedName);
-        const current = this.findComment(threadId, commentId);
-        const optimistic = current?.reactions?.find((reaction) => reaction.name === normalizedName);
-        if (optimistic) {
-          optimistic.currentUserAwardId = added.currentUserAwardId;
-          optimistic.users = mergeReactionUsers(optimistic.users, added.users);
+  toggleCommentReaction(threadId: string, commentId: string, name: string, expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const thread = review.threads.find((item) => item.id === threadId);
+      const comment = thread?.comments.find((item) => item.id === commentId);
+      if (!comment || comment.pending) throw new Error("This comment is no longer available.");
+      const normalizedName = normalizeReactionName(name);
+      if (!comment.reactionsLoaded) {
+        comment.reactions = await client.listCommentReactions(review, commentId);
+        this.assertReviewContext(expected);
+        comment.reactionsLoaded = true;
+      }
+      const previous = cloneReactions(comment.reactions ?? []);
+      const awardId = comment.reactions?.find((reaction) => reaction.name === normalizedName)?.currentUserAwardId;
+      comment.reactions = optimisticallyToggleReaction(comment.reactions ?? [], normalizedName, review.currentUserId, Boolean(awardId));
+      comment.reactionError = undefined;
+      this.emitChange();
+      try {
+        if (awardId) await client.removeCommentReaction(review, commentId, awardId);
+        else {
+          const added = await client.addCommentReaction(review, commentId, normalizedName);
+          const optimistic = comment.reactions.find((reaction) => reaction.name === normalizedName);
+          if (optimistic) {
+            optimistic.currentUserAwardId = added.currentUserAwardId;
+            optimistic.users = mergeReactionUsers(optimistic.users, added.users);
+          }
         }
+        const settled = comment.reactions.find((reaction) => reaction.name === normalizedName);
+        if (settled) settled.pending = false;
+      } catch (error) {
+        comment.reactions = previous;
+        comment.reactionError = "Could not update the reaction.";
+        throw error;
       }
-      const current = this.findComment(threadId, commentId);
-      const settled = current?.reactions?.find((reaction) => reaction.name === normalizedName);
-      if (settled) settled.pending = false;
-      this.persistReviewState();
+    });
+  }
+
+  editComment(threadId: string, commentId: string, body: string, expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const thread = review.threads.find((item) => item.id === threadId);
+      const index = thread?.comments.findIndex((comment) => comment.id === commentId) ?? -1;
+      const comment = thread?.comments[index];
+      const trimmed = requireCommentBody(body);
+      if (!thread || !comment || !comment.canEdit || comment.pending) throw new Error("This comment cannot be edited. Your draft has been kept.");
+      const previous = { ...comment };
+      comment.body = trimmed;
+      comment.updatedAt = editedTimestamp(comment.createdAt);
+      comment.pending = true;
       this.emitChange();
-    } catch {
-      const current = this.findComment(threadId, commentId);
-      if (current) {
-        current.reactions = previous;
-        current.reactionError = "リアクションを更新できませんでした。";
-        this.emitChange();
+      try {
+        const confirmed = await client.updateComment(review, threadId, commentId, trimmed);
+        thread.comments[index] = {
+          ...previous, ...confirmed, body: confirmed.body || trimmed,
+          createdAt: confirmed.createdAt === new Date(0).toISOString() ? previous.createdAt : confirmed.createdAt,
+          updatedAt: editedTimestamp(previous.createdAt, confirmed.updatedAt), canEdit: true, pending: false
+        };
+      } catch (error) {
+        thread.comments[index] = previous;
+        throw error;
       }
-      void vscode.window.showErrorMessage("GitLab のリアクションを更新できませんでした。");
-    } finally {
-      this.reactionMutations.delete(mutationKey);
-    }
+    });
   }
 
-  async editComment(threadId: string, commentId: string, body: string): Promise<void> {
-    const review = this.state;
-    const thread = review?.threads.find((item) => item.id === threadId);
-    const commentIndex = thread?.comments.findIndex((comment) => comment.id === commentId) ?? -1;
-    const comment = commentIndex >= 0 ? thread?.comments[commentIndex] : undefined;
-    const trimmed = body.trim();
-    if (!review || !thread || !comment || !comment.canEdit || comment.pending || !trimmed) {
-      return;
-    }
-
-    const previous = { ...comment };
-    comment.body = trimmed;
-    comment.updatedAt = editedTimestamp(comment.createdAt);
-    comment.pending = true;
-    this.emitChange();
-
-    try {
-      const confirmed = await this.getClient().updateComment(review, threadId, commentId, trimmed);
-      thread.comments[commentIndex] = {
-        ...previous,
-        ...confirmed,
-        body: confirmed.body || trimmed,
-        createdAt: confirmed.createdAt === new Date(0).toISOString() ? previous.createdAt : confirmed.createdAt,
-        updatedAt: editedTimestamp(previous.createdAt, confirmed.updatedAt),
-        canEdit: true,
-        pending: false
-      };
-      this.persistReviewState();
+  toggleResolved(threadId: string, expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const thread = review.threads.find((item) => item.id === threadId);
+      if (!thread || thread.pending || thread.resolvable === false) throw new Error("This discussion cannot be changed.");
+      const previousResolved = thread.resolved;
+      thread.resolved = !previousResolved;
+      thread.pending = true;
       this.emitChange();
-    } catch {
-      thread.comments[commentIndex] = previous;
-      this.emitChange();
-      void vscode.window.showErrorMessage("GitLab のコメントを編集できませんでした。");
-    }
+      try {
+        const confirmed = await client.setResolved(review, threadId, thread.resolved);
+        confirmed.comments = confirmed.comments.map((comment) => {
+          const previous = thread.comments.find((candidate) => candidate.id === comment.id);
+          return previous ? { ...comment, authorId: previous.authorId, updatedAt: comment.updatedAt ?? previous.updatedAt, canEdit: previous.canEdit } : comment;
+        });
+        const index = review.threads.indexOf(thread);
+        if (index >= 0) review.threads[index] = confirmed;
+      } catch (error) {
+        thread.resolved = previousResolved;
+        throw error;
+      } finally { thread.pending = false; }
+    });
   }
 
-  async toggleResolved(threadId: string): Promise<void> {
-    const review = this.state;
-    const thread = review?.threads.find((item) => item.id === threadId);
-    if (!review || !thread || thread.pending || thread.resolvable === false) {
-      return;
-    }
-
-    const previousResolved = thread.resolved;
-    thread.resolved = !previousResolved;
-    thread.pending = true;
-    this.emitChange();
-
-    try {
-      const confirmedThread = await this.getClient().setResolved(review, threadId, thread.resolved);
-      confirmedThread.comments = confirmedThread.comments.map((comment) => {
-        const previousComment = thread.comments.find((candidate) => candidate.id === comment.id);
-        return previousComment
-          ? {
-              ...comment,
-              authorId: previousComment.authorId,
-              updatedAt: comment.updatedAt ?? previousComment.updatedAt,
-              canEdit: previousComment.canEdit
-            }
-          : comment;
-      });
-      this.replaceThread(threadId, confirmedThread);
-      this.persistReviewState();
-      this.emitChange();
-    } catch {
-      thread.resolved = previousResolved;
-      thread.pending = false;
-      this.emitChange();
-      void vscode.window.showErrorMessage("GitLab のスレッド状態を更新できませんでした。");
-    }
+  addThread(filePath: string, mrLine: number, oldLine: number | undefined, body: string,
+    mode: ReviewSubmissionMode = this.submissionMode, expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const file = review.files.find((item) => item.path === filePath);
+      const trimmed = requireCommentBody(body);
+      if (!file || !Number.isInteger(mrLine) || mrLine < 1) throw new Error("This line is no longer available. Your draft has been kept.");
+      if (mode === "review") {
+        await this.createDraftNote(review, () => client.createDraftThread(review, file, mrLine, oldLine, trimmed), trimmed, filePath, mrLine);
+      } else {
+        await this.createDiscussion(review, () => client.createThread(review, file, mrLine, oldLine, trimmed), trimmed, filePath, mrLine, oldLine);
+      }
+    });
   }
 
-  async addThread(
-    filePath: string,
-    mrLine: number,
-    oldLine: number | undefined,
-    body: string,
-    mode: ReviewSubmissionMode = this.submissionMode
-  ): Promise<void> {
-    const review = this.state;
-    const file = this.findFile(filePath);
-    const trimmed = body.trim();
-    if (!review || !file || !trimmed || mrLine < 1) {
-      return;
-    }
+  addOverviewThread(body: string, mode: ReviewSubmissionMode = "comment", expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const trimmed = requireCommentBody(body);
+      if (mode === "review") await this.createDraftNote(review, () => client.createOverviewDraftNote(review, trimmed), trimmed);
+      else await this.createDiscussion(review, () => client.createOverviewThread(review, trimmed), trimmed);
+    });
+  }
 
-    this.submissionMode = normalizeSubmissionMode(mode);
-    if (this.submissionMode === "review") {
-      await this.addFileDraftNote(review, file, mrLine, oldLine, trimmed);
-      return;
-    }
-
-    const pendingThread: ReviewThread = {
-      id: pendingId("thread"),
-      filePath,
-      line: mrLine,
-      oldLine,
-      newLine: mrLine,
-      resolved: false,
-      resolvable: true,
-      pending: true,
-      comments: [{
-        id: pendingId("comment"),
-        author: "you",
-        body: trimmed,
-        createdAt: new Date().toISOString(),
-        canEdit: true,
-        pending: true
-      }]
+  private async createDiscussion(review: ReviewState, create: () => Promise<ReviewThread>, body: string,
+    filePath?: string, line?: number, oldLine?: number): Promise<void> {
+    const pending: ReviewThread = {
+      id: pendingId("thread"), filePath, line, oldLine, newLine: line,
+      resolved: false, resolvable: Boolean(filePath), pending: true,
+      comments: [{ id: pendingId("comment"), author: "you", body, createdAt: new Date().toISOString(), canEdit: true, pending: true }]
     };
-    review.threads.push(pendingThread);
+    review.threads.push(pending);
     this.emitChange();
-
     try {
-      const confirmedThread = await this.getClient().createThread(review, file, mrLine, oldLine, trimmed);
-      this.replaceThread(pendingThread.id, confirmedThread);
-      this.persistReviewState();
-      this.emitChange();
-    } catch {
-      const index = review.threads.findIndex((thread) => thread.id === pendingThread.id);
-      if (index >= 0) {
-        review.threads.splice(index, 1);
-      }
-      this.emitChange();
-      void vscode.window.showErrorMessage("GitLab のレビューコメントを追加できませんでした。");
+      const confirmed = await create();
+      const index = review.threads.indexOf(pending);
+      if (index >= 0) review.threads[index] = confirmed;
+    } catch (error) {
+      review.threads = review.threads.filter((thread) => thread !== pending);
+      throw error;
     }
   }
 
-  async addOverviewThread(body: string, mode: ReviewSubmissionMode = "comment"): Promise<void> {
-    const review = this.state;
-    const trimmed = body.trim();
-    if (!review || !trimmed) {
-      return;
-    }
-
-    this.setSubmissionMode(mode);
-
-    if (mode === "review") {
-      await this.addOverviewDraftNote(review, trimmed);
-      return;
-    }
-
-    const pendingThread: ReviewThread = {
-      id: pendingId("thread"),
-      resolved: false,
-      resolvable: false,
-      pending: true,
-      comments: [{
-        id: pendingId("comment"),
-        author: "you",
-        body: trimmed,
-        createdAt: new Date().toISOString(),
-        canEdit: true,
-        pending: true
-      }]
-    };
-    review.threads.push(pendingThread);
-    this.emitChange();
-
-    try {
-      const confirmedThread = await this.getClient().createOverviewThread(review, trimmed);
-      this.replaceThread(pendingThread.id, confirmedThread);
-      this.persistReviewState();
-      this.emitChange();
-    } catch {
-      const index = review.threads.findIndex((thread) => thread.id === pendingThread.id);
-      if (index >= 0) {
-        review.threads.splice(index, 1);
-      }
-      this.emitChange();
-      void vscode.window.showErrorMessage("GitLab のレビュースレッドを追加できませんでした。");
-    }
-  }
-
-  async publishReviewDraft(draftId: string): Promise<void> {
-    const review = this.state;
-    const draft = review?.draftNotes?.find((candidate) => candidate.id === draftId);
-    if (!review || !draft || draft.pending) return;
-
-    draft.pending = true;
-    this.emitChange();
-    try {
-      await this.getClient().publishDraftNote(review, draftId);
-      review.draftNotes = review.draftNotes?.filter((candidate) => candidate.id !== draftId) ?? [];
-      this.persistReviewState();
-      this.emitChange();
-      await this.refresh();
-    } catch {
-      draft.pending = false;
-      this.emitChange();
-      void vscode.window.showErrorMessage("レビューコメントを今すぐ公開できませんでした。");
-    }
-  }
-
-  async submitReview(): Promise<void> {
-    const review = this.state;
-    const drafts = review?.draftNotes ?? [];
-    if (!review || !drafts.length || drafts.some((draft) => draft.pending)) return;
-
-    drafts.forEach((draft) => { draft.pending = true; });
-    this.emitChange();
-    try {
-      await this.getClient().publishAllDraftNotes(review);
-      review.draftNotes = [];
-      this.persistReviewState();
-      this.emitChange();
-      await this.refresh();
-    } catch {
-      drafts.forEach((draft) => { draft.pending = false; });
-      this.emitChange();
-      void vscode.window.showErrorMessage("GitLab のレビューを送信できませんでした。");
-    }
-  }
-
-  private async addOverviewDraftNote(review: ReviewState, body: string): Promise<void> {
-    const pendingDraft: ReviewDraftNote = {
-      id: pendingId("draft-note"),
-      body,
-      pending: true
-    };
+  private async createDraftNote(review: ReviewState, create: () => Promise<ReviewDraftNote>, body: string,
+    filePath?: string, line?: number): Promise<void> {
+    const pending: ReviewDraftNote = { id: pendingId("draft-note"), body, filePath, line, pending: true };
     const drafts = review.draftNotes ?? (review.draftNotes = []);
-    drafts.push(pendingDraft);
+    drafts.push(pending);
     this.emitChange();
-
     try {
-      const confirmedDraft = await this.getClient().createOverviewDraftNote(review, body);
-      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
-      if (index >= 0) drafts[index] = confirmedDraft;
-      this.persistReviewState();
-      this.emitChange();
-    } catch {
-      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
+      const confirmed = await create();
+      const index = drafts.indexOf(pending);
+      if (index >= 0) drafts[index] = confirmed;
+    } catch (error) {
+      const index = drafts.indexOf(pending);
       if (index >= 0) drafts.splice(index, 1);
-      this.emitChange();
-      void vscode.window.showErrorMessage("コメントを GitLab のレビューに追加できませんでした。");
+      throw error;
     }
   }
 
-  private async addFileDraftNote(
-    review: ReviewState,
-    file: ReviewFile,
-    mrLine: number,
-    oldLine: number | undefined,
-    body: string
-  ): Promise<void> {
-    const pendingDraft: ReviewDraftNote = {
-      id: pendingId("draft-note"),
-      body,
-      filePath: file.path,
-      line: mrLine,
-      pending: true
-    };
-    const drafts = review.draftNotes ?? (review.draftNotes = []);
-    drafts.push(pendingDraft);
-    this.emitChange();
-
-    try {
-      const confirmedDraft = await this.getClient().createDraftThread(review, file, mrLine, oldLine, body);
-      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
-      if (index >= 0) drafts[index] = confirmedDraft;
-      this.persistReviewState();
+  publishReviewDraft(draftId: string, expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const draft = review.draftNotes?.find((item) => item.id === draftId);
+      if (!draft || draft.pending) throw new Error("This draft is no longer available.");
+      draft.pending = true;
       this.emitChange();
-    } catch {
-      const index = drafts.findIndex((draft) => draft.id === pendingDraft.id);
-      if (index >= 0) drafts.splice(index, 1);
-      this.emitChange();
-      void vscode.window.showErrorMessage("コメントを GitLab のレビューに追加できませんでした。");
-    }
+      try {
+        await client.publishDraftNote(review, draftId);
+        review.draftNotes = review.draftNotes?.filter((item) => item !== draft) ?? [];
+      } finally { draft.pending = false; }
+    }).then((result) => {
+      if (result.ok && sameReviewContext(expected, this.getReviewContext())) void this.refresh();
+      return result;
+    });
   }
 
+  submitReview(expected?: ReviewContext): Promise<ReviewMutationResult> {
+    return this.runMutation(expected, async (review, client) => {
+      const drafts = review.draftNotes ?? [];
+      if (!drafts.length || drafts.some((draft) => draft.pending)) throw new Error("There are no ready draft comments to submit.");
+      drafts.forEach((draft) => { draft.pending = true; });
+      this.emitChange();
+      try {
+        await client.publishAllDraftNotes(review);
+        review.draftNotes = [];
+      } finally { drafts.forEach((draft) => { draft.pending = false; }); }
+    }).then((result) => {
+      if (result.ok && sameReviewContext(expected, this.getReviewContext())) void this.refresh();
+      return result;
+    });
+  }
   async saveLocalEdit(filePath: string, editedText: string): Promise<void> {
-    const file = this.findFile(filePath);
     const review = this.state;
-    if (!file || !review) {
+    const file = this.findFile(filePath);
+    if (!review || !file) {
       throw new Error("The file is no longer available in the selected merge request.");
     }
-
-    const contents = this.reviewFileContentCache.get(reviewFileContentKey(review, file))?.contents
-      ?? await this.loadReviewFileContents(filePath);
-    const edits = { ...(this.localEdits[review.id] ?? {}) };
-    if (editedText === contents.mrText) {
-      delete edits[filePath];
-    } else {
-      const localEdit = { filePath, editedText, updatedAt: new Date().toISOString() };
-      const threads = this.getThreadsForFile(filePath);
-      const lines = await buildReviewLinesAsync(contents.oldText, contents.mrText, editedText, threads);
-      this.cacheReviewLines(this.reviewLineCacheKey(review, file, true, localEdit, threads), lines);
-      edits[filePath] = localEdit;
-    }
-
-    const nextLocalEdits = { ...this.localEdits, [review.id]: edits };
-    await this.persistLocalEdits(nextLocalEdits);
-    this.localEdits = nextLocalEdits;
-    this.emitChange();
+    const storage = this.storage;
+    return this.enqueue(async () => {
+      this.assertSnapshot(review);
+      const contents = this.reviewFileContentCache.get(reviewFileContentKey(review, file))?.contents
+        ?? await this.loadReviewFileContents(filePath);
+      this.assertSnapshot(review);
+      let localEdit: LocalEdit | undefined;
+      if (editedText !== contents.mrText) {
+        localEdit = { filePath, editedText, updatedAt: new Date().toISOString() };
+        const threads = this.getThreadsForFile(filePath);
+        const lines = await buildReviewLinesAsync(contents.oldText, contents.mrText, editedText, threads);
+        this.assertSnapshot(review);
+        this.cacheReviewLines(this.reviewLineCacheKey(review, file, true, localEdit, threads), lines);
+      }
+      const edits = { ...(this.localEdits[review.id] ?? {}) };
+      if (localEdit) edits[filePath] = localEdit;
+      else delete edits[filePath];
+      const nextLocalEdits = { ...this.localEdits, [review.id]: edits };
+      await storage.update(REVIEW_CACHE_KEYS.localEdits, nextLocalEdits);
+      this.assertSnapshot(review);
+      this.localEdits = nextLocalEdits;
+      this.emitChange();
+    });
   }
 
   async clearLocalEdit(filePath: string): Promise<void> {
     const review = this.state;
-    if (!review || !this.getLocalEdit(review.id, filePath)) {
-      return;
-    }
-
-    const edits = { ...this.localEdits[review.id] };
-    delete edits[filePath];
-    const nextLocalEdits = { ...this.localEdits, [review.id]: edits };
-    await this.persistLocalEdits(nextLocalEdits);
-    this.localEdits = nextLocalEdits;
-    this.emitChange();
+    if (!review) return;
+    const storage = this.storage;
+    return this.enqueue(async () => {
+      this.assertSnapshot(review);
+      if (!this.getLocalEdit(review.id, filePath)) return;
+      const edits = { ...this.localEdits[review.id] };
+      delete edits[filePath];
+      const nextLocalEdits = { ...this.localEdits, [review.id]: edits };
+      await storage.update(REVIEW_CACHE_KEYS.localEdits, nextLocalEdits);
+      this.assertSnapshot(review);
+      this.localEdits = nextLocalEdits;
+      this.emitChange();
+    });
   }
 
   private getFileSummary(file: ReviewFile): FileSummary {
@@ -1382,7 +1352,7 @@ export class ReviewStore {
     if (!this.threadIndex) {
       this.threadIndex = new Map<string, ReviewThread[]>();
       for (const thread of this.state?.threads ?? []) {
-        if (!thread.filePath) continue;
+        if (!thread.filePath || (thread.positionHeadSha && thread.positionHeadSha !== this.state?.diffRefs?.headSha)) continue;
         const items = this.threadIndex.get(thread.filePath) ?? [];
         items.push(thread);
         this.threadIndex.set(thread.filePath, items);
@@ -1411,6 +1381,9 @@ export class ReviewStore {
   }
 
   private getClient(): GitLabReviewClient {
+    if (!this.instanceUrl || this.instanceUrl !== this.configuredInstance()) {
+      throw new Error("The GitLab instance changed. Refresh the connection before continuing.");
+    }
     const baseUrl = this.baseUrlProvider();
     const hostname = getGitLabHostname(baseUrl);
     if (!hostname) {
@@ -1444,7 +1417,7 @@ export class ReviewStore {
   }
 
   private branchCacheKey(review: ReviewState, branch: string): string {
-    return `${review.id}:${branch}`;
+    return `${review.id}:${branch}:${this.branchCacheGeneration}`;
   }
 
   private getLocalEdit(reviewId: string, filePath: string): LocalEdit | undefined {
@@ -1483,16 +1456,18 @@ export class ReviewStore {
   }
 
   private async hydrateNewChangesPaths(range: ReviewUpdateRange): Promise<void> {
+    const instanceUrl = this.instanceUrl;
     try {
       const files = await this.loadComparisonFiles(range);
-      this.applyChangedPaths(range, files);
+      if (instanceUrl === this.configuredInstance()) this.applyChangedPaths(range, files);
     } catch {
       // Without a comparison, progress remains conservative and treats every file as new.
     }
   }
 
   private async loadComparisonFiles(range: ReviewUpdateRange): Promise<CommitDiffFile[]> {
-    const cacheKey = `compare:${range.projectId}:${range.fromSha}:${range.toSha}`;
+    const instanceUrl = this.instanceUrl;
+    const cacheKey = `compare:${instanceUrl}:${range.projectId}:${range.fromSha}:${range.toSha}`;
     const cached = this.commitDiffCache.get(cacheKey);
     if (cached) {
       this.commitDiffCacheTimes.set(cacheKey, Date.now());
@@ -1504,6 +1479,7 @@ export class ReviewStore {
     let load: Promise<CommitDiffFile[]>;
     load = this.getClient().compareCommits(range.projectId, range.fromSha, range.toSha)
       .then((files) => {
+        if (instanceUrl !== this.configuredInstance()) throw new Error("The GitLab instance changed while loading the comparison.");
         this.setLimitedCache(
           this.commitDiffCache,
           this.commitDiffCacheTimes,
@@ -1669,7 +1645,7 @@ export class ReviewStore {
   }
 
   private persistLocalEdits(value: LocalEditsByMergeRequest = this.localEdits): Thenable<void> {
-    return this.context.workspaceState.update(REVIEW_CACHE_KEYS.localEdits, value);
+    return this.storage.update(REVIEW_CACHE_KEYS.localEdits, value);
   }
 
   private persistReviewState(): void {
@@ -1797,10 +1773,15 @@ export class ReviewStore {
   }
 
   private persistBestEffort(key: string, value: unknown): void {
-    void Promise.resolve(this.context.workspaceState.update(key, value)).catch(() => {
+    void Promise.resolve(this.storage.update(key, value)).catch(() => {
       // A storage failure must not turn a successful GitLab request into a UI failure.
     });
   }
+}
+
+function requireCommentBody(body: string): string {
+  if (typeof body !== "string" || !body.trim()) throw new Error("Write a comment before submitting.");
+  return body.trim();
 }
 
 function toMergeRequestOption(state: ReviewState): MergeRequestOption {

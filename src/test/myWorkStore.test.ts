@@ -34,7 +34,7 @@ test("My Work emits primary results while candidate discovery is still pending",
   const cachedCandidate = candidateItem("cached-candidate");
   const freshCandidate = candidateItem("fresh-candidate");
   const context = createTestContext({
-    "gitlabReview.cache.myWork.candidates": [cachedCandidate]
+    [myWorkCacheKey("https://gitlab.com", "candidates")]: [cachedCandidate]
   });
   const storePrototype = MyWorkStore.prototype as unknown as Record<string, unknown>;
   const clientPrototype = GitLabReviewClient.prototype as unknown as Record<string, unknown>;
@@ -118,6 +118,125 @@ test("My Work keeps an empty successful refresh ready", async () => {
   assert.deepEqual(state.buckets, { attention: [], active: [], waiting: [] });
 });
 
+test("My Work only loads the cache for the canonical GitLab instance", async () => {
+  const { MyWorkStore } = await loadMyWorkModules();
+  const hostA = "https://gitlab.example.test/gitlab";
+  const hostB = "https://gitlab.example.test/other";
+  const cachedA = sourceItem("host-a");
+  const cachedB = sourceItem("host-b");
+  const context = createTestContext({
+    [myWorkCacheKey(hostA, "todo")]: [cachedA],
+    [myWorkCacheKey(hostB, "todo")]: [cachedB],
+    [myWorkCacheKey(hostA, "lastSuccessfulAt")]: "2026-09-05T00:00:00.000Z",
+    "gitlabReview.cache.myWork.todo": [sourceItem("ambiguous-old-cache")]
+  });
+
+  const storeA = new MyWorkStore(context as never, () => `${hostA}/`);
+  assert.equal(storeA.getState().buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "host-a"), true);
+  assert.equal(storeA.getState().lastSuccessfulAt, "2026-09-05T00:00:00.000Z");
+
+  const storeB = new MyWorkStore(context as never, () => hostB);
+  assert.equal(storeB.getState().buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "host-b"), true);
+  assert.equal(storeB.getState().buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "host-a"), false);
+  assert.equal(storeB.getState().buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "ambiguous-old-cache"), false);
+
+  storeA.dispose();
+  storeB.dispose();
+});
+
+test("My Work reports an invalid instance without making network requests", async () => {
+  const { MyWorkStore, GitLabReviewClient } = await loadMyWorkModules();
+  const clientPrototype = GitLabReviewClient.prototype as unknown as Record<string, unknown>;
+  const originalListMyWorkTodos = clientPrototype.listMyWorkTodos;
+  const originalListMyWorkMergeRequests = clientPrototype.listMyWorkMergeRequests;
+  let requestCount = 0;
+  clientPrototype.listMyWorkTodos = () => { requestCount += 1; return Promise.resolve([]); };
+  clientPrototype.listMyWorkMergeRequests = () => { requestCount += 1; return Promise.resolve([]); };
+
+  try {
+    const store = new MyWorkStore(createTestContext() as never, () => "not a GitLab URL");
+    await store.refresh();
+    const state = store.getState();
+    assert.equal(state.phase, "error");
+    assert.deepEqual(state.failedSources, ["todo", "assigned_to_me", "reviews_for_me", "created_by_me", "candidates"]);
+    assert.equal(requestCount, 0);
+    store.dispose();
+  } finally {
+    clientPrototype.listMyWorkTodos = originalListMyWorkTodos;
+    clientPrototype.listMyWorkMergeRequests = originalListMyWorkMergeRequests;
+  }
+});
+
+test("My Work discards a refresh that belongs to a previous GitLab instance", async () => {
+  const { MyWorkStore, GitLabReviewClient } = await loadMyWorkModules();
+  const hostAName = "a.gitlab.example.test";
+  const hostBName = "b.gitlab.example.test";
+  const hostA = `https://${hostAName}`;
+  const hostB = `https://${hostBName}`;
+  const primaryByHost = new Map<string, ReturnType<typeof deferred<MyWorkSourceItem[]>>>();
+  const candidateByHost = new Map<string, ReturnType<typeof deferred<MyWorkMergeRequestCandidate[]>>>();
+  const storePrototype = MyWorkStore.prototype as unknown as Record<string, unknown>;
+  const clientPrototype = GitLabReviewClient.prototype as unknown as Record<string, unknown>;
+  const originalRefreshCandidates = storePrototype.refreshCandidates;
+  const originalListMyWorkTodos = clientPrototype.listMyWorkTodos;
+  const originalListMyWorkMergeRequests = clientPrototype.listMyWorkMergeRequests;
+  const getPrimary = (host: string) => {
+    let value = primaryByHost.get(host);
+    if (!value) {
+      value = deferred<MyWorkSourceItem[]>();
+      primaryByHost.set(host, value);
+    }
+    return value;
+  };
+  const getCandidates = (host: string) => {
+    let value = candidateByHost.get(host);
+    if (!value) {
+      value = deferred<MyWorkMergeRequestCandidate[]>();
+      candidateByHost.set(host, value);
+    }
+    return value;
+  };
+  clientPrototype.listMyWorkTodos = function(this: { getHostname(): string }) { return getPrimary(this.getHostname()).promise; };
+  clientPrototype.listMyWorkMergeRequests = function(this: { getHostname(): string }) { return getPrimary(this.getHostname()).promise; };
+  storePrototype.refreshCandidates = function(this: { }, client: { getHostname(): string }) {
+    return getCandidates(client.getHostname()).promise;
+  };
+
+  try {
+    let currentHost = hostA;
+    const context = createTestContext();
+    const store = new MyWorkStore(context as never, () => currentHost);
+    const firstRefresh = store.refresh();
+    assert.strictEqual(store.refresh(), firstRefresh);
+
+    currentHost = `${hostB}/`;
+    store.resetConnection();
+    assert.deepEqual(store.getState().buckets, { attention: [], active: [], waiting: [] });
+
+    const secondRefresh = store.refresh();
+    assert.notStrictEqual(secondRefresh, firstRefresh);
+    getPrimary(hostBName).resolve([sourceItem("host-b-result")]);
+    getCandidates(hostBName).resolve([]);
+    await secondRefresh;
+    assert.equal(store.getState().buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "host-b-result"), true);
+
+    getPrimary(hostAName).resolve([sourceItem("stale-host-a-result")]);
+    getCandidates(hostAName).resolve([]);
+    await firstRefresh;
+    const finalState = store.getState();
+    assert.equal(finalState.buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "stale-host-a-result"), false);
+    assert.equal(finalState.buckets.waiting.some((entry) => entry.kind === "merge-request" && entry.title === "host-b-result"), true);
+    assert.equal(context.values.has(myWorkCacheKey(hostB, "todo")), true);
+    assert.equal(context.values.has(myWorkCacheKey(hostB, "lastSuccessfulAt")), true);
+    assert.equal([...context.values.keys()].some((key) => key.includes(encodeURIComponent(hostA))), false);
+    store.dispose();
+  } finally {
+    storePrototype.refreshCandidates = originalRefreshCandidates;
+    clientPrototype.listMyWorkTodos = originalListMyWorkTodos;
+    clientPrototype.listMyWorkMergeRequests = originalListMyWorkMergeRequests;
+  }
+});
+
 async function loadMyWorkModules(): Promise<{
   MyWorkStore: typeof import("../myWorkStore").MyWorkStore;
   GitLabReviewClient: typeof import("../gitlabApi").GitLabReviewClient;
@@ -181,6 +300,7 @@ async function runMyWorkScenario(options: {
 }
 
 function createTestContext(initial: Record<string, unknown> = {}): {
+  values: Map<string, unknown>;
   workspaceState: {
     get<T>(key: string): T | undefined;
     update(key: string, value: unknown): Promise<void>;
@@ -188,6 +308,7 @@ function createTestContext(initial: Record<string, unknown> = {}): {
 } {
   const values = new Map(Object.entries(initial));
   return {
+    values,
     workspaceState: {
       get<T>(key: string): T | undefined { return values.get(key) as T | undefined; },
       async update(key: string, value: unknown): Promise<void> { values.set(key, value); }
@@ -219,6 +340,10 @@ function candidateItem(key: string): MyWorkMergeRequestCandidate {
     commitCount: 1,
     bucket: "active"
   };
+}
+
+function myWorkCacheKey(instanceUrl: string, suffix: string): string {
+  return `gitlabReview.cache.myWork.${encodeURIComponent(instanceUrl)}.${suffix}`;
 }
 
 class TestEventEmitter {

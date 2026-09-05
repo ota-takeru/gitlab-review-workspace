@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import { CommentImageService, CommentImageServiceError } from "./commentImageService";
-import type { CommentImageWebviewMessage } from "./commentImageTypes";
+import { commentImageRequestMatchesReviewContext, type CommentImageWebviewMessage } from "./commentImageTypes";
 import { GlabAuthService } from "./glabAuth";
 import { LocalGitService } from "./localGitService";
 import { MyWorkStore } from "./myWorkStore";
 import { ReviewStore } from "./reviewStore";
+import { reviewContextKey, type ReviewContext, type ReviewMutationResult } from "./reviewContext";
 import type { ReviewOverview } from "./reviewTypes";
 import { configureWebview } from "./webviewHost";
 import { createSidebarViewState } from "./webviewViewModels";
@@ -12,6 +13,7 @@ import type {
   BranchTreeState,
   CommitDiffState,
   HostMessage,
+  ReviewMutationMessage,
   SidebarMessage,
   SidebarHostMessage,
   SidebarViewState
@@ -33,10 +35,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private commitDiff: CommitDiffState = { phase: "hidden", files: [] };
   private commitDiffRequestId = 0;
   private localScopeKey = "";
+  private reviewScopeKey = "";
   private activeTab: "review" | "my-work" = "review";
   private myWorkPollingTimer?: ReturnType<typeof setInterval>;
   private updateScheduled = false;
   private readonly expandedThreadIds = new Set<string>();
+  /** Review revision represented by the last state sent to the Sidebar. */
+  private renderedReviewContext?: ReviewContext;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -50,6 +55,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     this.context.subscriptions.push(
       this.store.onDidChange(() => {
         const overview = this.store.getOverview();
+        const nextReviewScopeKey = overview.reviewContext
+          ? reviewContextKey(overview.reviewContext)
+          : overview.selectedMergeRequest
+            ? `selection:${overview.selectedMergeRequest.projectId}!${overview.selectedMergeRequest.iid}`
+            : "";
+        if (nextReviewScopeKey !== this.reviewScopeKey) {
+          this.reviewScopeKey = nextReviewScopeKey;
+          this.branchTreeRequestId += 1;
+          this.branchTree = { phase: "hidden", entries: [] };
+          this.commitDiffRequestId += 1;
+          this.commitDiff = { phase: "hidden", files: [] };
+          this.expandedThreadIds.clear();
+        }
         if (this.store.getIsRefreshing() && this.branchTree.phase !== "hidden") {
           this.branchTreeRequestId += 1;
           this.branchTree = { phase: "hidden", entries: [] };
@@ -58,7 +76,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           this.commitDiffRequestId += 1;
           this.commitDiff = { phase: "hidden", files: [] };
         }
-        const nextLocalScopeKey = `${overview.selectedMergeRequest?.projectId ?? ""}!${overview.selectedMergeRequest?.iid ?? ""}:${overview.sourceBranch}`;
+        const reviewContext = this.store.getReviewContext();
+        const nextLocalScopeKey = `${reviewContext ? reviewContextKey(reviewContext) : ""}:${overview.sourceBranch}`;
         if (nextLocalScopeKey !== this.localScopeKey) {
           this.localScopeKey = nextLocalScopeKey;
           this.expandedThreadIds.clear();
@@ -85,6 +104,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
+    this.renderedReviewContext = undefined;
     webviewView.webview.onDidReceiveMessage((message: SidebarMessage) => void this.handleMessage(message));
     webviewView.onDidChangeVisibility(() => {
       this.updateMyWorkPolling();
@@ -94,6 +114,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
         this.view = undefined;
+        this.renderedReviewContext = undefined;
         this.stopMyWorkPolling();
       }
     });
@@ -131,6 +152,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     if (!this.view?.visible) return;
     const auth = this.glabAuth.getState();
     const overview = this.store.getOverview();
+    this.renderedReviewContext = overview.reviewContext
+      ? Object.freeze({ ...overview.reviewContext })
+      : undefined;
     const detailIds = new Set(this.expandedThreadIds);
     if (overview.threads.length <= 20) {
       for (const thread of overview.threads) {
@@ -143,7 +167,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       this.branchTree,
       this.commitDiff,
       this.navigator.getActiveFilePath(),
-      this.localGit.getState(overview.sourceBranch, overview.selectedMergeRequest?.projectId),
+      this.localGit.getState(overview.sourceBranch, this.store.getProjectIdentity()),
       this.activeTab,
       this.myWork.getState(),
       this.store.getThreadDetails([...detailIds])
@@ -155,8 +179,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     switch (message.type) {
       case "ready": this.pushUpdate(); return;
       case "openFile":
-        this.store.markFileViewed(message.filePath);
-        this.navigator.openFile(message.filePath, message.line, message.threadId);
+        await this.runContextAction(message, () => {
+          this.navigator.openFile(message.filePath, message.line, message.threadId);
+        });
         return;
       case "toggleBranchTree": await this.toggleBranchTree(message.branch); return;
       case "closeBranchTree":
@@ -164,19 +189,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         this.branchTree = { phase: "hidden", entries: [] };
         this.pushUpdate();
         return;
-      case "openBranchFile": await this.navigator.openBranchFile(message.branch, message.filePath); return;
-      case "openCommitFile": await this.navigator.openCommitDiffFile(message.commitId, message.filePath); return;
-      case "openNewChangesFile": await this.navigator.openNewChangesFile(message.filePath); return;
-      case "addComment": await this.store.addComment(message.threadId, message.body); return;
-      case "loadCommentReactions": await this.store.loadCommentReactions(message.threadId, message.commentId); return;
-      case "toggleCommentReaction": await this.store.toggleCommentReaction(message.threadId, message.commentId, message.name); return;
-      case "addOverviewThread": await this.store.addOverviewThread(message.body, message.mode); return;
+      case "openBranchFile": await this.runContextAction(message, () => this.navigator.openBranchFile(message.branch, message.filePath)); return;
+      case "openCommitFile": await this.runContextAction(message, () => this.navigator.openCommitDiffFile(message.commitId, message.filePath)); return;
+      case "openNewChangesFile": await this.runContextAction(message, () => this.navigator.openNewChangesFile(message.filePath)); return;
+      case "addComment": await this.runContextAction(message, () => this.store.addComment(message.threadId, message.body, message.reviewContext)); return;
+      case "loadCommentReactions": await this.runContextAction(message, () => this.store.loadCommentReactions(message.threadId, message.commentId)); return;
+      case "toggleCommentReaction": await this.runContextAction(message, () => this.store.toggleCommentReaction(message.threadId, message.commentId, message.name, message.reviewContext)); return;
+      case "addOverviewThread": await this.runContextAction(message, () => this.store.addOverviewThread(message.body, message.mode, message.reviewContext)); return;
       case "setSubmissionMode": this.store.setSubmissionMode(message.mode); return;
-      case "publishReviewDraft": await this.store.publishReviewDraft(message.draftId); return;
-      case "submitReview": await this.store.submitReview(); return;
+      case "publishReviewDraft": await this.runContextAction(message, () => this.store.publishReviewDraft(message.draftId, message.reviewContext)); return;
+      case "submitReview": await this.runContextAction(message, () => this.store.submitReview(message.reviewContext)); return;
       case "markReviewComplete": this.store.markReviewComplete(); return;
-      case "editComment": await this.store.editComment(message.threadId, message.commentId, message.body); return;
-      case "toggleResolved": await this.store.toggleResolved(message.threadId); return;
+      case "editComment": await this.runContextAction(message, () => this.store.editComment(message.threadId, message.commentId, message.body, message.reviewContext)); return;
+      case "toggleResolved": await this.runContextAction(message, () => this.store.toggleResolved(message.threadId, message.reviewContext)); return;
       case "setThreadExpanded":
         if (message.expanded) this.expandedThreadIds.add(message.threadId);
         else this.expandedThreadIds.delete(message.threadId);
@@ -206,17 +231,51 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     }
   }
 
+  private async runContextAction<T extends object>(
+    message: ReviewMutationMessage<T>,
+    action: () => void | Promise<void | ReviewMutationResult>
+  ): Promise<void> {
+    let result: ReviewMutationResult;
+    try {
+      // Validate before handing the request to a navigator, image service, or
+      // queued Store operation. The Store repeats this check after queueing.
+      this.store.assertReviewContext(message.reviewContext);
+      const outcome = await action();
+      result = outcome ?? { ok: true };
+    } catch (error) {
+      result = {
+        ok: false,
+        errorMessage: error instanceof Error
+          ? error.message
+          : "The current merge request is no longer available. Your draft has been kept."
+      };
+    }
+    await this.postReviewMutationResult(message.requestId, result);
+    this.pushUpdate();
+  }
+
+  private async postReviewMutationResult(requestId: string, result: ReviewMutationResult): Promise<void> {
+    if (!this.view) return;
+    await this.view.webview.postMessage({
+      type: "reviewMutationResult",
+      requestId,
+      ...result
+    } satisfies HostMessage<SidebarViewState, SidebarHostMessage>);
+  }
+
   private async handleCommentImage(message: CommentImageWebviewMessage): Promise<void> {
     const webview = this.view?.webview;
     if (!webview) return;
-    const selected = this.store.getOverview().selectedMergeRequest;
-    if (!selected || selected.projectId !== message.projectId) {
+    const renderedContext = this.renderedReviewContext;
+    if (!commentImageRequestMatchesReviewContext(message, renderedContext)) {
       await this.postCommentImageFailure(webview, message, "The image request does not match the selected merge request.");
       return;
     }
     try {
+      this.store.assertReviewContext(message.reviewContext);
       if (message.type === "uploadCommentImage") {
         const result = await this.commentImages.upload(message);
+        this.store.assertReviewContext(message.reviewContext);
         await webview.postMessage({
           type: "commentImageUploaded",
           requestId: message.requestId,
@@ -226,6 +285,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         } satisfies HostMessage<SidebarViewState>);
       } else {
         const result = await this.commentImages.resolve(message);
+        this.store.assertReviewContext(message.reviewContext);
         await webview.postMessage({
           type: "commentImageResolved",
           requestId: message.requestId,
@@ -299,12 +359,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
   private async refreshLocalWorkspace(): Promise<void> {
     const overview = this.store.getOverview();
-    await this.localGit.refresh(overview.sourceBranch, overview.selectedMergeRequest?.projectId);
+    await this.localGit.refresh(overview.sourceBranch, this.store.getProjectIdentity());
     this.pushUpdate();
   }
 
   private async switchCurrentWorkspace(branch: string): Promise<void> {
-    const state = this.localGit.getState(this.store.getOverview().sourceBranch, this.store.getOverview().selectedMergeRequest?.projectId);
+    const state = this.localGit.getState(this.store.getOverview().sourceBranch, this.store.getProjectIdentity());
     if (state.target.kind !== "local-branch" || state.target.branch !== branch || state.dirty.total > 0) {
       void vscode.window.showWarningMessage("現在のworkspaceは安全に切り替えられない状態です。", { modal: true });
       return;
@@ -318,7 +378,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     try {
       await this.localGit.switchCurrentWorkspace(branch);
       await this.refreshLocalWorkspace();
-      await this.rememberWorkspaceAssociation(this.localGit.getState(branch, this.store.getOverview().selectedMergeRequest?.projectId).repositoryRoot);
+      await this.rememberWorkspaceAssociation(this.localGit.getState(branch, this.store.getProjectIdentity()).repositoryRoot);
       void vscode.window.showInformationMessage(`Workspaceを ${branch} に切り替えました。`);
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : "Workspaceの切り替えに失敗しました。");
@@ -329,7 +389,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private async openExistingWorktree(path: string): Promise<void> {
     if (!path) return;
     const overview = this.store.getOverview();
-    const state = this.localGit.getState(overview.sourceBranch, overview.selectedMergeRequest?.projectId);
+    const state = this.localGit.getState(overview.sourceBranch, this.store.getProjectIdentity());
     if (state.target.kind !== "existing-worktree" || state.target.path !== path) {
       await this.refreshLocalWorkspace();
       void vscode.window.showWarningMessage("このworktreeの状態が変わっています。最新のローカル状態を確認してください。");
@@ -344,7 +404,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   private async createWorktree(branch: string): Promise<void> {
-    const state = this.localGit.getState(this.store.getOverview().sourceBranch, this.store.getOverview().selectedMergeRequest?.projectId);
+    const state = this.localGit.getState(this.store.getOverview().sourceBranch, this.store.getProjectIdentity());
     if (state.target.kind !== "local-branch" || state.target.branch !== branch) {
       void vscode.window.showWarningMessage("このbranchは新しいworktreeを作成できるlocal branchではありません。", { modal: true });
       return;
@@ -384,7 +444,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     const overview = this.store.getOverview();
     const selected = overview.selectedMergeRequest;
     if (!selected || !overview.sourceBranch) return;
-    const state = this.localGit.getState(overview.sourceBranch, selected.projectId);
+    const state = this.localGit.getState(overview.sourceBranch, this.store.getProjectIdentity());
     await this.store.rememberWorkspaceAssociation({
       projectId: selected.projectId,
       mergeRequestIid: selected.iid,
@@ -409,27 +469,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private async toggleCommit(commitId: string): Promise<void> {
     const overview = this.store.getOverview();
     const mrKey = overviewMergeRequestKey(overview);
-    if (!mrKey || !overview.commits.some((commit) => commit.id === commitId)) return;
-    if (this.commitDiff.phase !== "hidden" && this.commitDiff.mrKey === mrKey && this.commitDiff.commitId === commitId) {
+    const contextKey = overviewReviewContextKey(overview);
+    if (!mrKey || !contextKey || !overview.commits.some((commit) => commit.id === commitId)) return;
+    if (this.commitDiff.phase !== "hidden"
+      && this.commitDiff.mrKey === mrKey
+      && this.commitDiff.reviewContextKey === contextKey
+      && this.commitDiff.commitId === commitId) {
       // Selection is idempotent. Collapsing is an explicit `collapseCommit`
       // action so duplicate webview messages cannot hide an active filter.
       return;
     }
     const requestId = ++this.commitDiffRequestId;
-    this.commitDiff = { phase: "loading", mrKey, commitId, files: [] };
+    this.commitDiff = { phase: "loading", mrKey, reviewContextKey: contextKey, commitId, files: [] };
     this.pushUpdate();
     try {
       const files = await this.store.loadCommitDiff(commitId);
-      if (requestId !== this.commitDiffRequestId || overviewMergeRequestKey(this.store.getOverview()) !== mrKey) return;
+      if (requestId !== this.commitDiffRequestId
+        || overviewMergeRequestKey(this.store.getOverview()) !== mrKey
+        || overviewReviewContextKey(this.store.getOverview()) !== contextKey) return;
       this.commitDiff = {
         phase: "ready",
         mrKey,
+        reviewContextKey: contextKey,
         commitId,
         files: files.map(({ diff: _diff, ...file }) => file)
       };
     } catch {
-      if (requestId !== this.commitDiffRequestId || overviewMergeRequestKey(this.store.getOverview()) !== mrKey) return;
-      this.commitDiff = { phase: "error", mrKey, commitId, files: [], errorMessage: "コミット差分を取得できませんでした。" };
+      if (requestId !== this.commitDiffRequestId
+        || overviewMergeRequestKey(this.store.getOverview()) !== mrKey
+        || overviewReviewContextKey(this.store.getOverview()) !== contextKey) return;
+      this.commitDiff = { phase: "error", mrKey, reviewContextKey: contextKey, commitId, files: [], errorMessage: "コミット差分を取得できませんでした。" };
     }
     this.pushUpdate();
   }
@@ -461,8 +530,18 @@ function overviewMergeRequestKey(overview: ReviewOverview): string | undefined {
   return selected ? `${selected.projectId}!${selected.iid}` : undefined;
 }
 
+function overviewReviewContextKey(overview: ReviewOverview): string | undefined {
+  const selected = overview.selectedMergeRequest;
+  return selected
+    ? overview.reviewContext
+      ? reviewContextKey(overview.reviewContext)
+      : `selection:${selected.projectId}!${selected.iid}`
+    : undefined;
+}
+
 function isCommitDiffValid(state: CommitDiffState, overview: ReviewOverview): boolean {
   if (state.phase === "hidden") return true;
   return state.mrKey === overviewMergeRequestKey(overview)
+    && state.reviewContextKey === overviewReviewContextKey(overview)
     && Boolean(state.commitId && overview.commits.some((commit) => commit.id === state.commitId));
 }

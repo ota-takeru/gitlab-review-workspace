@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { computed, ref } from "vue";
+import type { ReviewContext } from "../../../src/reviewContext";
 import { installCommentImageHostMock } from "../../stories/commentImageHostMock";
 import GlCommentForm from "./GlCommentForm.vue";
 
@@ -35,10 +36,38 @@ function renderImageForm(args: Record<string, unknown>) {
     components: { GlCommentForm },
     setup() {
       const value = ref(String(args.modelValue ?? ""));
-      const projectId = `storybook-comment-form-${crypto.randomUUID()}`;
-      return { args, projectId, value };
+      const reviewContext = ref(storyReviewContext(`storybook-comment-form-${crypto.randomUUID()}`));
+      return { args, reviewContext, value };
     },
-    template: '<GlCommentForm v-model="value" v-bind="args" :project-id="projectId" />'
+    template: '<GlCommentForm v-model="value" v-bind="args" :review-context="reviewContext" />'
+  };
+}
+
+function storyReviewContext(projectId: string, instanceUrl = "https://gitlab.example.com"): ReviewContext {
+  return {
+    instanceUrl,
+    projectId,
+    mergeRequestIid: 17,
+    baseSha: "base",
+    startSha: "start",
+    headSha: "head",
+    currentUserId: "7"
+  };
+}
+
+function renderContextSwitchImageForm(args: Record<string, unknown>) {
+  return {
+    components: { GlCommentForm },
+    setup() {
+      const value = ref(String(args.modelValue ?? ""));
+      const projectId = `storybook-comment-form-${crypto.randomUUID()}`;
+      const reviewContext = ref(storyReviewContext(projectId, "https://gitlab-a.example.com"));
+      const switchContext = () => {
+        reviewContext.value = storyReviewContext(projectId, "https://gitlab-b.example.com");
+      };
+      return { args, reviewContext, switchContext, value };
+    },
+    template: '<div><GlCommentForm v-model="value" v-bind="args" :review-context="reviewContext" /><button type="button" @click="switchContext">Switch review context</button></div>'
   };
 }
 
@@ -147,6 +176,7 @@ export const PickerUploadSuccessAndRemove: Story = {
     const canvas = within(canvasElement);
     const picker = canvasElement.querySelector<HTMLInputElement>('input[type="file"]');
     await expect(picker).not.toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Upload image" }));
     await userEvent.upload(picker!, pngFile());
 
     await expect(await canvas.findByText("Attached: review-image.png")).toBeVisible();
@@ -175,6 +205,7 @@ export const UploadFailureRetryAndRemove: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const picker = canvasElement.querySelector<HTMLInputElement>('input[type="file"]');
+    await userEvent.click(canvas.getByRole("button", { name: "Upload image" }));
     await userEvent.upload(picker!, pngFile("retry-image.png"));
 
     await expect(await canvas.findByText("Storybook upload failed.")).toBeVisible();
@@ -186,5 +217,34 @@ export const UploadFailureRetryAndRemove: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Remove image" }));
     await expect(canvas.queryByText("Attached: retry-image.png")).toBeNull();
     await expect(canvas.getByRole("textbox", { name: "Comment with failed image" }).querySelector('img[data-comment-image-path="/uploads/story/retried.png"]')).toBeNull();
+  }
+};
+
+export const PickerSelectionRejectsChangedContext: Story = {
+  args: {
+    modelValue: "Keep this draft on its original review:",
+    ariaLabel: "Context-bound image comment",
+    submitLabel: "Comment"
+  },
+  render: renderContextSwitchImageForm,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const picker = canvasElement.querySelector<HTMLInputElement>('input[type="file"]');
+    let uploadRequests = 0;
+    const observeUpload = (event: Event) => {
+      const message = (event as CustomEvent<{ type?: string }>).detail;
+      if (message?.type === "uploadCommentImage") uploadRequests += 1;
+    };
+    window.addEventListener("storybook-vscode-message", observeUpload);
+    try {
+      await userEvent.click(canvas.getByRole("button", { name: "Upload image" }));
+      await userEvent.click(canvas.getByRole("button", { name: "Switch review context" }));
+      await userEvent.upload(picker!, pngFile("old-context.png"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await expect(uploadRequests).toBe(0);
+      await expect(canvas.queryByText("Attached: old-context.png")).toBeNull();
+    } finally {
+      window.removeEventListener("storybook-vscode-message", observeUpload);
+    }
   }
 };

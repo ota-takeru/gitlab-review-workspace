@@ -42,6 +42,7 @@ import {
 export interface GitLabMergeRequest {
   iid: number;
   project_id: number | string;
+  source_project_id?: number | string | null;
   title: string;
   state: MergeRequestState;
   source_branch: string;
@@ -306,12 +307,27 @@ export class GitLabReviewClient {
     if (!baseSha || !startSha || !headSha) {
       throw new Error("The merge request does not have diff references yet.");
     }
+    // Diffs and metadata are separate requests. Reject a mixed snapshot when
+    // a push lands while they are loading, instead of labelling old lines with
+    // the new revision (or the reverse).
+    const latest = await this.getJson<GitLabMergeRequest>(mergeRequestPath);
+    if (latest.diff_refs?.base_sha !== baseSha || latest.diff_refs?.start_sha !== startSha || latest.diff_refs?.head_sha !== headSha) {
+      throw new Error("The merge request changed while loading. Refresh to load a consistent diff.");
+    }
 
     const files = mapGitLabReviewDiffs(diffs);
+    // Local files belong to the source repository (which may be a fork), not
+    // necessarily the target project used for discussion API requests.
+    let projectPath = mergeRequest.web_url?.replace(/\/-\/merge_requests\/.*$/, "");
+    if (mergeRequest.source_project_id != null && String(mergeRequest.source_project_id) !== projectId) {
+      projectPath = await this.getProject(String(mergeRequest.source_project_id))
+        .then((project) => project.web_url).catch(() => undefined);
+    }
 
     return {
       id: `${projectId}!${mergeRequest.iid}`,
       projectId,
+      projectPath,
       mergeRequestIid: mergeRequest.iid,
       currentUserId: currentUser?.id === undefined ? undefined : String(currentUser.id),
       webUrl: mergeRequest.web_url,

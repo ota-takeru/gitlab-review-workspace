@@ -4,6 +4,7 @@ import {
   type CommentImageHostMessage,
   type CommentImageMimeType
 } from "../../src/commentImageTypes";
+import { reviewContextKey, type ReviewContext } from "../../src/reviewContext";
 import { vscode } from "./vscode";
 
 export type CommentImageStatus = "idle" | "loading" | "ready" | "error";
@@ -26,17 +27,17 @@ function requestId(prefix: string): string {
   return `${prefix}-${Date.now()}-${sequence}`;
 }
 
-function imageKey(projectId: string, imagePath: string): string {
-  return `${projectId}:${imagePath}`;
+function imageKey(context: ReviewContext, imagePath: string): string {
+  return `${reviewContextKey(context)}:${imagePath}`;
 }
 
 export function isPrivateCommentImagePath(imagePath: string): boolean {
   return /^(?:\/uploads\/|https:\/\/[^\s/]+(?:\/[^\s]*)?\/uploads\/)[^\s]+$/i.test(imagePath);
 }
 
-export function commentImageState(projectId: string | undefined, imagePath: string): CommentImageState | undefined {
-  if (!projectId || !isPrivateCommentImagePath(imagePath)) return undefined;
-  const key = imageKey(projectId, imagePath);
+export function commentImageState(context: ReviewContext | undefined, imagePath: string): CommentImageState | undefined {
+  if (!context || !isPrivateCommentImagePath(imagePath)) return undefined;
+  const key = imageKey(context, imagePath);
   let state = resolutions.get(key);
   if (!state) {
     state = reactive({ status: "idle" as const });
@@ -45,23 +46,29 @@ export function commentImageState(projectId: string | undefined, imagePath: stri
   return state;
 }
 
-export function resolveCommentImage(projectId: string | undefined, imagePath: string, retry = false): void {
-  const state = commentImageState(projectId, imagePath);
-  if (!state || !projectId || (!retry && state.status !== "idle") || state.status === "loading") return;
-  const key = imageKey(projectId, imagePath);
+export function resolveCommentImage(context: ReviewContext | undefined, imagePath: string, retry = false): void {
+  const state = commentImageState(context, imagePath);
+  if (!state || !context || (!retry && state.status !== "idle") || state.status === "loading") return;
+  const key = imageKey(context, imagePath);
   const existingRequest = [...resolveRequests.entries()].find(([, value]) => value === key);
   if (existingRequest) return;
   state.status = "loading";
   state.message = undefined;
   const id = requestId("resolve-comment-image");
   resolveRequests.set(id, key);
-  vscode.postMessage({ type: "resolveCommentImage", requestId: id, projectId, imagePath });
+  vscode.postMessage({
+    type: "resolveCommentImage",
+    requestId: id,
+    reviewContext: immutableReviewContext(context),
+    projectId: context.projectId,
+    imagePath
+  });
 }
 
 /** Cache a URI already supplied by the Host after a successful upload. */
-export function rememberCommentImage(projectId: string | undefined, imagePath: string, displayUri?: string): void {
+export function rememberCommentImage(context: ReviewContext | undefined, imagePath: string, displayUri?: string): void {
   if (!displayUri) return;
-  const state = commentImageState(projectId, imagePath);
+  const state = commentImageState(context, imagePath);
   if (!state) return;
   state.status = "ready";
   state.displayUri = displayUri;
@@ -69,18 +76,30 @@ export function rememberCommentImage(projectId: string | undefined, imagePath: s
 }
 
 export function uploadCommentImage(
-  projectId: string | undefined,
+  context: ReviewContext | undefined,
   filename: string,
   mimeType: string,
   dataBase64: string
 ): Promise<UploadResult> {
-  if (!projectId) return Promise.reject(new Error("Select a merge request before uploading an image."));
+  if (!context) return Promise.reject(new Error("Select a merge request before uploading an image."));
   if (!isCommentImageMimeType(mimeType)) return Promise.reject(new Error("Only PNG, JPEG, WebP, and GIF images are supported."));
   const id = requestId("upload-comment-image");
   return new Promise<UploadResult>((resolve, reject) => {
     uploadRequests.set(id, { resolve, reject });
-    vscode.postMessage({ type: "uploadCommentImage", requestId: id, projectId, filename, mimeType: mimeType as CommentImageMimeType, dataBase64 });
+    vscode.postMessage({
+      type: "uploadCommentImage",
+      requestId: id,
+      reviewContext: immutableReviewContext(context),
+      projectId: context.projectId,
+      filename,
+      mimeType: mimeType as CommentImageMimeType,
+      dataBase64
+    });
   });
+}
+
+function immutableReviewContext(context: ReviewContext): ReviewContext {
+  return Object.freeze({ ...context });
 }
 
 /** Route Host image responses once per webview application. */

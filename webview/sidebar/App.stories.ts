@@ -1,11 +1,30 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { onMounted, onUnmounted } from "vue";
+import { reviewContextKey, type ReviewContext } from "../../src/reviewContext";
 import type { SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import { threadCollapseKey } from "../../src/webviewViewModels";
 import { vscode } from "../common/vscode";
 import { populatedMyWorkState } from "../stories/myWorkFixtures";
 import App from "./App.vue";
+
+const baseReviewContext: ReviewContext = {
+  instanceUrl: "https://gitlab.example.com",
+  projectId: "101",
+  mergeRequestIid: 42,
+  baseSha: "base-sha",
+  startSha: "start-sha",
+  headSha: "head-sha"
+};
+
+const highDensityReviewContext: ReviewContext = {
+  instanceUrl: "https://gitlab.example.com",
+  projectId: "202",
+  mergeRequestIid: 84,
+  baseSha: "dense-base-sha",
+  startSha: "dense-start-sha",
+  headSha: "dense-head-sha"
+};
 
 const state: SidebarViewState = {
   activeTab: "review",
@@ -46,6 +65,7 @@ const state: SidebarViewState = {
     targetBranch: "main",
     author: "author",
     reviewers: [],
+    reviewContext: baseReviewContext,
     commits: [],
     files: [],
     threads: [],
@@ -172,7 +192,7 @@ const pendingReviewState: SidebarViewState = {
   }
 };
 
-const progressState: SidebarViewState = {
+const latestPushState: SidebarViewState = {
   ...threadState,
   overview: {
     ...threadState.overview,
@@ -224,17 +244,17 @@ const initialLoadingState: SidebarViewState = {
 };
 
 const cachedRefreshState: SidebarViewState = {
-  ...progressState,
+  ...latestPushState,
   activeTab: "review",
-  overview: { ...progressState.overview, isRefreshing: true },
+  overview: { ...latestPushState.overview, isRefreshing: true },
   myWork: populatedMyWorkState({ phase: "loading" })
 };
 
 const partialErrorState: SidebarViewState = {
-  ...progressState,
+  ...latestPushState,
   activeTab: "review",
   overview: {
-    ...progressState.overview,
+    ...latestPushState.overview,
     errorMessage: "GitLab could not refresh this merge request. Cached review is still available."
   },
   myWork: populatedMyWorkState({ phase: "partial", failedSources: ["todo", "candidates"] })
@@ -243,6 +263,28 @@ const partialErrorState: SidebarViewState = {
 const emptyReviewState: SidebarViewState = {
   ...state,
   overview: { ...state.overview, loadState: "empty", selectedMergeRequest: undefined, title: "" }
+};
+
+const errorReviewState: SidebarViewState = {
+  ...state,
+  overview: {
+    ...state.overview,
+    loadState: "error",
+    selectedMergeRequest: undefined,
+    title: "",
+    errorMessage: "GitLab could not load this merge request."
+  }
+};
+
+const revisionChangedState: SidebarViewState = {
+  ...state,
+  overview: {
+    ...state.overview,
+    reviewContext: {
+      ...baseReviewContext,
+      headSha: "head-sha-after-push"
+    }
+  }
 };
 
 const signedOutState: SidebarViewState = {
@@ -260,20 +302,20 @@ const longPath = "packages/review-workspace/src/generated/integrations/gitlab/di
 const longSourceBranch = "feature/preserve-review-discussion-context-across-navigation";
 const longTargetBranch = "release/2026-07-stabilization";
 const narrowLongContentState: SidebarViewState = {
-  ...progressState,
+  ...latestPushState,
   activeFilePath: longPath,
   threadDetails: [{
-    ...progressState.threadDetails[0]!,
+    ...latestPushState.threadDetails[0]!,
     filePath: longPath,
     comments: [{
-      ...progressState.threadDetails[0]!.comments[0]!,
+      ...latestPushState.threadDetails[0]!.comments[0]!,
       body: "Keep the selected discussion anchored while this unusually long path wraps, the Sidebar narrows, and the refresh remains pending."
     }]
   }],
   overview: {
-    ...progressState.overview,
+    ...latestPushState.overview,
     selectedMergeRequest: {
-      ...progressState.overview.selectedMergeRequest!,
+      ...latestPushState.overview.selectedMergeRequest!,
       title: longTitle,
       sourceBranch: longSourceBranch,
       targetBranch: longTargetBranch
@@ -281,21 +323,21 @@ const narrowLongContentState: SidebarViewState = {
     title: longTitle,
     sourceBranch: longSourceBranch,
     targetBranch: longTargetBranch,
-    files: progressState.overview.files?.map((file, index) => ({
+    files: latestPushState.overview.files?.map((file, index) => ({
       ...file,
       path: index === 0 ? longPath : file.path
     })),
-    threads: progressState.overview.threads?.map((thread) => ({
+    threads: latestPushState.overview.threads?.map((thread) => ({
       ...thread,
       filePath: longPath,
       searchText: `${longPath}\nreviewer\nKeep the selected discussion anchored while this unusually long path wraps.`
     })),
-    progress: progressState.overview.progress ? {
-      ...progressState.overview.progress,
+    progress: latestPushState.overview.progress ? {
+      ...latestPushState.overview.progress,
       nextUnresolvedThread: { id: "discussion-1", filePath: longPath, line: 42 }
     } : undefined,
-    newChanges: progressState.overview.newChanges ? {
-      ...progressState.overview.newChanges,
+    newChanges: latestPushState.overview.newChanges ? {
+      ...latestPushState.overview.newChanges,
       changedPaths: [longPath]
     } : undefined
   }
@@ -388,7 +430,7 @@ const highDensityThreadDetails = highDensityThreadRecords.map((thread) => ({
   }))
 }));
 
-const highDensityMrKey = "202!84";
+const highDensityMrKey = reviewContextKey(highDensityReviewContext);
 const highDensityState: SidebarViewState = {
   ...state,
   activeFilePath: highDensityFiles[0]!.path,
@@ -417,6 +459,7 @@ const highDensityState: SidebarViewState = {
     sourceBranch: "feature/review-context",
     targetBranch: "main",
     author: "Review author",
+    reviewContext: highDensityReviewContext,
     commits: highDensityCommits,
     files: highDensityFiles,
     threads: highDensityThreads,
@@ -578,13 +621,17 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const ReadyReview: Story = {
-  render: () => renderState(progressState, { changedFilesExpanded: true }),
+  render: () => renderState(latestPushState, { changedFilesExpanded: true }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("heading", { name: "Add review threads from the sidebar" })).toBeVisible();
-    await expect(canvas.getByRole("region", { name: "Review progress" })).toBeVisible();
+    await expect(canvas.queryByRole("region", { name: "Review progress" })).toBeNull();
+    await expect(canvas.queryByRole("progressbar", { name: "Review completion" })).toBeNull();
     await expect(canvas.getByRole("button", { name: /Changed files/ })).toHaveAttribute("aria-expanded", "true");
     await expect(canvas.getByRole("search", { name: "Changed file filters" })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Latest push" })).toBeVisible();
+    expect(canvasElement.querySelector("select option[value='unviewed']")).toBeNull();
+    expect(canvasElement.querySelector("select option[value='viewed']")).toBeNull();
     await expect(canvas.getByText("Select a file to open its diff")).toBeVisible();
     const changedDirectory = canvasElement.querySelector<HTMLElement>(".changed-tree-list .tree-directory > summary");
     if (!changedDirectory) throw new Error("Changed file directory is not rendered");
@@ -594,17 +641,17 @@ export const ReadyReview: Story = {
     const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
     const messageCount = messages.length;
     await userEvent.click(changedFile);
-    await waitFor(() => expect(messages.slice(messageCount)).toContainEqual({ type: "openFile", filePath: "src/review.ts" }));
+    await waitFor(() => expect(messages.slice(messageCount)).toContainEqual(expect.objectContaining({ type: "openFile", filePath: "src/review.ts" })));
     await expect(canvas.getByTitle("src/review.ts:42")).toBeVisible();
     await expect(canvas.getByText(":party_parrot:")).toBeVisible();
     const reactionCount = messages.length;
     await userEvent.click(canvas.getByRole("button", { name: "Remove thumbsup reaction, 2" }));
-    await waitFor(() => expect(messages.slice(reactionCount)).toContainEqual({
+    await waitFor(() => expect(messages.slice(reactionCount)).toContainEqual(expect.objectContaining({
       type: "toggleCommentReaction",
       threadId: "discussion-1",
       commentId: "comment-1",
       name: "thumbsup"
-    }));
+    })));
   }
 };
 
@@ -622,7 +669,7 @@ export const HighDensityReview: Story = {
     await expect(canvas.getByRole("button", { name: /Changed files/ })).toHaveAttribute("aria-expanded", "true");
     await expect(canvas.getByRole("button", { name: /Commits/ })).toHaveAttribute("aria-expanded", "true");
     await expect(canvas.getByRole("region", { name: "Local workspace" })).toHaveTextContent("No matching local or remote branch is available.");
-    await expect(canvas.getByRole("progressbar", { name: "Review completion" })).toHaveAttribute("aria-valuenow", "34");
+    await expect(canvas.queryByRole("region", { name: "Review progress" })).toBeNull();
     await expect(canvas.getByRole("button", { name: "Collapse discussion at src/review/overview.ts:42" })).toBeVisible();
     await expect(canvas.getByText("Keep the selected discussion anchored while the review sections are expanded.")).toBeVisible();
     await expect(canvasElement.querySelectorAll(".commit-row")).toHaveLength(highDensityCommits.length);
@@ -677,7 +724,7 @@ export const NarrowLongContent: Story = {
     await expect(canvas.getByRole("heading", { name: longTitle })).toBeVisible();
     const goToDiff = canvas.getByRole("button", { name: `Go to diff for ${longPath} at line 42` });
     await expect(goToDiff).toBeVisible();
-    await expect(canvas.getByRole("progressbar", { name: "Review completion" })).toBeVisible();
+    await expect(canvas.queryByRole("progressbar", { name: "Review completion" })).toBeNull();
     const sourceBranch = canvas.getByTitle(longSourceBranch);
     await expect(sourceBranch).toHaveAttribute("title", longSourceBranch);
     await expect(sourceBranch.querySelector(".gl-technical-identifier-tail")).toHaveTextContent("context-across-navigation");
@@ -723,11 +770,157 @@ export const AddReviewThread: Story = {
     const messages = (window as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
     const messageCount = messages.length;
     await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
-    await waitFor(() => expect(messages.slice(messageCount)).toContainEqual({
+    await waitFor(() => expect(messages.slice(messageCount)).toContainEqual(expect.objectContaining({
       type: "addOverviewThread",
       body: "Keep this text.",
       mode: "comment"
+    })));
+    const submitted = messages.slice(messageCount).reverse().find((message): message is { type: "addOverviewThread"; requestId: string } => (
+      typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+    ));
+    if (submitted) {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "reviewMutationResult", requestId: submitted.requestId, ok: true }
+      }));
+      await waitFor(() => expect(editor).not.toHaveTextContent("Keep this text."));
+    }
+  }
+};
+
+export const MutationResultLifecycle: Story = {
+  render: () => renderState(state),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "Add review thread" });
+    const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+
+    await userEvent.click(editor);
+    await userEvent.type(editor, "Send this comment.");
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+    const firstRequest = await waitFor(() => {
+      const request = messages.slice().reverse().find((message): message is { type: "addOverviewThread"; requestId: string } => (
+        typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+      ));
+      if (!request) throw new Error("Comment request was not emitted");
+      return request;
+    });
+    canvasElement.ownerDocument.defaultView?.dispatchEvent(new MessageEvent("message", {
+      data: { type: "reviewMutationResult", requestId: firstRequest.requestId, ok: true }
     }));
+    await waitFor(() => expect(editor).not.toHaveTextContent("Send this comment."));
+
+    await userEvent.click(editor);
+    await userEvent.type(editor, "Keep this comment after failure.");
+    const beforeFailure = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+    const failedRequest = await waitFor(() => {
+      const request = messages.slice(beforeFailure).find((message): message is { type: "addOverviewThread"; requestId: string } => (
+        typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+      ));
+      if (!request) throw new Error("Failure request was not emitted");
+      return request;
+    });
+    canvasElement.ownerDocument.defaultView?.dispatchEvent(new MessageEvent("message", {
+      data: { type: "reviewMutationResult", requestId: failedRequest.requestId, ok: false, errorMessage: "GitLab rejected the comment." }
+    }));
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent("GitLab rejected the comment."));
+    await expect(editor).toHaveTextContent("Keep this comment after failure.");
+
+    const beforeRetry = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      const retry = messages.slice(beforeRetry).find((message): message is { type: "addOverviewThread"; requestId: string } => (
+        typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+      ));
+      expect(retry).toBeDefined();
+      expect(retry?.requestId).not.toBe(failedRequest.requestId);
+    });
+    const retryRequest = messages.slice(beforeRetry).reverse().find((message): message is { type: "addOverviewThread"; requestId: string } => (
+      typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+    ));
+    if (!retryRequest) throw new Error("Retry request was not emitted");
+    canvasElement.ownerDocument.defaultView?.dispatchEvent(new MessageEvent("message", {
+      data: { type: "reviewMutationResult", requestId: retryRequest.requestId, ok: true }
+    }));
+    await waitFor(() => expect(editor).not.toHaveTextContent("Keep this comment after failure."));
+  }
+};
+
+export const OverviewCommentPending: Story = {
+  render: () => renderState(state),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "Add review thread" });
+    const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+    await userEvent.click(editor);
+    await userEvent.type(editor, "Keep the composer visible while GitLab saves.");
+    const beforeSubmit = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+    await waitFor(() => {
+      const request = messages.slice(beforeSubmit).find((message): message is { type: "addOverviewThread"; requestId: string } => (
+        typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+      ));
+      expect(request).toBeDefined();
+    });
+    await expect(canvas.getByRole("status")).toHaveTextContent("Sending…");
+    await expect(editor).toHaveTextContent("Keep the composer visible while GitLab saves.");
+    await expect(canvas.getByRole("button", { name: "Sending…" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Post as comment" })).toBeDisabled();
+  }
+};
+
+export const OverviewCommentFailed: Story = {
+  render: () => renderState(state),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "Add review thread" });
+    const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+    await userEvent.click(editor);
+    await userEvent.type(editor, "Keep the composer visible after a failed save.");
+    const beforeSubmit = messages.length;
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+    const request = await waitFor(() => {
+      const candidate = messages.slice(beforeSubmit).find((message): message is { type: "addOverviewThread"; requestId: string } => (
+        typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread" && "requestId" in message
+      ));
+      if (!candidate) throw new Error("Comment request was not emitted");
+      return candidate;
+    });
+    canvasElement.ownerDocument.defaultView?.dispatchEvent(new MessageEvent("message", {
+      data: { type: "reviewMutationResult", requestId: request.requestId, ok: false, errorMessage: "GitLab rejected this comment." }
+    }));
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent("GitLab rejected this comment."));
+    await expect(editor).toHaveTextContent("Keep the composer visible after a failed save.");
+    await expect(canvas.getByRole("button", { name: "Retry" })).toBeEnabled();
+  }
+};
+
+export const DraftRetainedAcrossRevision: Story = {
+  render: () => renderState(state),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByRole("textbox", { name: "Add review thread" });
+    await userEvent.click(editor);
+    await userEvent.type(editor, "Keep this draft after the latest push.");
+    const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+    const messageCount = messages.length;
+
+    canvasElement.ownerDocument.defaultView?.dispatchEvent(new MessageEvent("message", {
+      data: { type: "state", state: revisionChangedState }
+    }));
+
+    await waitFor(() => expect(canvas.getByRole("region", { name: "Drafts from previous review revision" })).toBeVisible());
+    const retained = canvas.getByRole("region", { name: "Drafts from previous review revision" });
+    await expect(within(retained).getByText("https://gitlab.example.com · 101!42")).toBeVisible();
+    await expect(within(retained).getByText("head-sha")).toBeVisible();
+    await expect(within(retained).getByRole("textbox", { name: "Previous overview draft for 101!42" })).toHaveValue("Keep this draft after the latest push.");
+    await expect(editor).not.toHaveTextContent("Keep this draft after the latest push.");
+    await userEvent.click(within(retained).getByRole("button", { name: "Copy draft" }));
+    await expect(within(retained).getByRole("button", { name: "Copied" })).toBeVisible();
+    expect(messages.slice(messageCount).some((message) => typeof message === "object" && message !== null && "type" in message && message.type === "addOverviewThread")).toBe(false);
+
+    const scopedDraftKey = JSON.stringify([reviewContextKey(baseReviewContext), "overview-draft"]);
+    await expect(within(retained).getByRole("textbox", { name: "Previous overview draft for 101!42" })).toHaveAttribute("data-retained-draft-key", scopedDraftKey);
   }
 };
 
@@ -818,8 +1011,24 @@ export const EmptyReview: Story = {
   render: () => renderState(emptyReviewState),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("No merge request available")).toBeVisible();
+    await expect(canvas.getByText("No merge request selected")).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Retry" })).toBeNull();
+    const openMyWork = canvas.getByRole("button", { name: "Open My work" });
+    await expect(openMyWork).toBeVisible();
+    const messages = (canvasElement.ownerDocument.defaultView as Window & { __storybookVsCodeMessages?: unknown[] }).__storybookVsCodeMessages ?? [];
+    const messageCount = messages.length;
+    await userEvent.click(openMyWork);
+    await waitFor(() => expect(messages.slice(messageCount)).toContainEqual({ type: "setSidebarTab", tab: "my-work" }));
+  }
+};
+
+export const ErrorReview: Story = {
+  render: () => renderState(errorReviewState),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("GitLab could not load this merge request.")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Open My work" })).toBeNull();
   }
 };
 
@@ -865,20 +1074,16 @@ export const MyWorkToReviewKeyboardWorkflow: Story = {
   }
 };
 
-export const ReviewProgress: Story = {
-  render: () => renderState(progressState),
+export const LatestPushAndChangedFiles: Story = {
+  render: () => renderState(latestPushState),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const progress = canvas.getByRole("region", { name: "Review progress" });
-    const progressRegion = within(progress);
-    await expect(progress).toBeVisible();
-    await expect(progressRegion.getByText("New since last review")).toBeVisible();
-    await expect(progressRegion.getByText("1/2")).toBeVisible();
-    await expect(progressRegion.getByRole("button", { name: "Next unresolved" })).toBeEnabled();
-    await expect(progressRegion.getByRole("button", { name: "Next unresolved" })).toHaveClass(/review-progress-next-action/);
-    await expect(canvasElement.querySelectorAll(".review-progress-actions > button")).toHaveLength(1);
-    await expect(progressRegion.getByRole("progressbar", { name: "Review completion" })).toHaveAttribute("aria-valuenow", "25");
+    await expect(canvas.queryByRole("region", { name: "Review progress" })).toBeNull();
+    await expect(canvas.queryByRole("progressbar", { name: "Review completion" })).toBeNull();
     await userEvent.click(canvas.getByRole("button", { name: /Changed files/ }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Latest push" })).toBeVisible());
+    expect(canvasElement.querySelector("select option[value='unviewed']")).toBeNull();
+    expect(canvasElement.querySelector("select option[value='viewed']")).toBeNull();
     await userEvent.selectOptions(canvas.getByRole("combobox", { name: "Filter changed files by status" }), "new");
     await waitFor(() => {
       expect(canvas.getByText("1 file")).toBeVisible();

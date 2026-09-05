@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import { buildBranchTree } from "../../src/branchTreeUtils";
 import { isCommentEdited } from "../../src/commentUtils";
 import { buildChangedFileTree, compactChangedFileTree } from "../../src/reviewTreeUtils";
+import { reviewContextKey, type ReviewContext } from "../../src/reviewContext";
 import {
   formatRelativeReplyTime,
   isCommitDiffForSelection,
@@ -12,8 +13,8 @@ import {
   threadContentId
 } from "../../src/webviewViewModels";
 import type { MyWorkMergeRequest } from "../../src/myWorkTypes";
-import type { ReviewComment, ReviewProgress, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
-import type { HostMessage, SidebarHostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
+import type { ReviewComment, ReviewSubmissionMode, ReviewThreadSummary, ReviewThreadSortOrder } from "../../src/reviewTypes";
+import type { HostMessage, ReviewMutationHostMessage, SidebarHostMessage, SidebarMessage, SidebarViewState } from "../../src/webviewProtocol";
 import GlBadge from "../common/components/GlBadge.vue";
 import GlAvatarGroup from "../common/components/GlAvatarGroup.vue";
 import GlButton from "../common/components/GlButton.vue";
@@ -30,6 +31,7 @@ import GlTechnicalIdentifier from "../common/components/GlTechnicalIdentifier.vu
 import GlThreadStatusAction from "../common/components/GlThreadStatusAction.vue";
 import GlReviewerList from "../common/components/GlReviewerList.vue";
 import { handleCommentImageMessage } from "../common/commentImages";
+import { createReviewMutationRequest, isReviewMutationResult, type SidebarMutationMessage, type SidebarMutationPayload } from "../common/reviewMutations";
 import { vscode } from "../common/vscode";
 import MyWorkView from "./MyWorkView.vue";
 import SidebarTabs from "./SidebarTabs.vue";
@@ -47,6 +49,27 @@ interface UiState {
   overviewThreadDrafts?: Record<string, string>;
   overviewThreadModes?: Record<string, ReviewSubmissionMode>;
   myWorkScrollTop?: number;
+}
+
+type DraftKind = "reply" | "edit" | "overview";
+type ReviewMutationEnvelope = SidebarMutationMessage;
+type ReviewMutationBuilder = (context: ReviewContext, body?: string) => ReviewMutationEnvelope;
+interface ReviewMutationRecord {
+  slot: string;
+  requestId: string;
+  context: ReviewContext;
+  contextKey: string;
+  build: ReviewMutationBuilder;
+  body?: string;
+  draftKind?: DraftKind;
+  draftKey?: string;
+}
+interface RetainedDraft {
+  key: string;
+  body: string;
+  kind: DraftKind;
+  contextKey: string;
+  context: ReviewContext;
 }
 
 const saved = (vscode.getState() ?? {}) as UiState;
@@ -68,104 +91,63 @@ const threadSearchOpen = ref(false);
 const threadSearchInput = ref<HTMLInputElement>();
 const changedFileSearchInput = ref<HTMLInputElement>();
 const changedFileQuery = ref("");
-const changedFileFilter = ref<"all" | "new" | "unviewed" | "viewed" | "unresolved" | "local">("all");
+const changedFileFilter = ref<"all" | "new" | "unresolved" | "local">("all");
 const resolvedByThread = new Map<string, boolean>();
 const requestedThreadDetails = new Set<string>();
+const pendingMutations = reactive<Record<string, ReviewMutationRecord>>({});
+const failedMutations = reactive<Record<string, ReviewMutationRecord>>({});
+const mutationErrors = reactive<Record<string, string>>({});
+const copiedRetainedDraftKey = ref<string>();
 let loadedMrKey = "";
 let readyRetry: number | undefined;
 let pendingRevealThreadId: string | undefined;
 let overviewComposerRevealFrame: number | undefined;
+let retainedDraftCopyTimer: number | undefined;
 
 const overview = computed(() => model.value?.overview);
 const threadDetailsById = computed(() => new Map((model.value?.threadDetails ?? []).map((thread) => [thread.id, thread])));
 const activeTab = computed(() => model.value?.activeTab ?? "review");
 const attentionCount = computed(() => model.value?.myWork.attentionCount ?? 0);
 const branchTree = computed(() => buildBranchTree(model.value?.branchTree.entries ?? []));
+const reviewContext = computed(() => overview.value?.reviewContext);
 const mrKey = computed(() => {
   const selected = overview.value?.selectedMergeRequest;
-  return selected ? `${selected.projectId}!${selected.iid}` : "";
+  return reviewContext.value
+    ? reviewContextKey(reviewContext.value)
+    : selected ? `selection:${selected.projectId}!${selected.iid}` : "";
+});
+const reviewScopeKey = computed(() => reviewContext.value ? reviewContextKey(reviewContext.value) : "");
+const retainedDrafts = computed<RetainedDraft[]>(() => {
+    const retained: RetainedDraft[] = [];
+    const collect = (drafts: Record<string, string>, kind: DraftKind): void => {
+      for (const [key, body] of Object.entries(drafts)) {
+        if (typeof body !== "string" || !body.trim()) continue;
+        const parsed = parseDraftContext(key);
+      if (!parsed || parsed.contextKey === reviewScopeKey.value) continue;
+      retained.push({ key, body, kind, ...parsed });
+    }
+  };
+  collect(overviewThreadDrafts, "overview");
+  collect(replyDrafts, "reply");
+  collect(editDrafts, "edit");
+  return retained;
 });
 const overviewThreadDraft = computed({
-  get: () => overviewThreadDrafts[mrKey.value] ?? "",
+  get: () => {
+    const key = overviewDraftKey();
+    return key ? overviewThreadDrafts[key] ?? "" : "";
+  },
   set: (value: string) => {
-    if (mrKey.value) overviewThreadDrafts[mrKey.value] = value;
+    const key = overviewDraftKey();
+    if (key) overviewThreadDrafts[key] = value;
   }
 });
-const overviewThreadMode = computed<ReviewSubmissionMode>(() => overviewThreadModes[mrKey.value] ?? "comment");
+const overviewThreadMode = computed<ReviewSubmissionMode>(() => {
+  const key = overviewDraftKey();
+  return (key ? overviewThreadModes[key] : undefined) ?? "comment";
+});
 const reviewSubmissionPending = computed(() => overview.value?.draftNotes.some((draft) => draft.pending) ?? false);
-const reviewProgress = computed<ReviewProgress>(() => {
-  const summary = overview.value;
-  if (!summary) {
-    return {
-      totalFiles: 0,
-      viewedFiles: 0,
-      unviewedFiles: 0,
-      totalDiscussions: 0,
-      resolvedDiscussions: 0,
-      unresolvedDiscussions: 0,
-      completionPercent: 0,
-      completionState: "not-started",
-      newSinceLastReview: false,
-      newCommitCount: 0
-    };
-  }
-  if (summary.progress) return summary.progress;
-  const viewedFiles = summary.files.filter((file) => file.viewed).length;
-  const totalDiscussions = summary.resolvedThreads + summary.unresolvedThreads;
-  const completionPercent = Math.round((
-    (summary.files.length === 0 ? 100 : viewedFiles / summary.files.length * 100)
-    + (totalDiscussions === 0 ? 100 : summary.resolvedThreads / totalDiscussions * 100)
-  ) / 2);
-  const next = summary.threads.find((thread) => !thread.resolved && thread.resolvable !== false);
-  const complete = viewedFiles === summary.files.length && summary.unresolvedThreads === 0;
-  return {
-    totalFiles: summary.files.length,
-    viewedFiles,
-    unviewedFiles: Math.max(0, summary.files.length - viewedFiles),
-    totalDiscussions,
-    resolvedDiscussions: summary.resolvedThreads,
-    unresolvedDiscussions: summary.unresolvedThreads,
-    completionPercent,
-    completionState: complete && summary.draftNotes.length > 0
-      ? "ready-to-submit"
-      : complete
-        ? "complete"
-        : viewedFiles > 0 || summary.resolvedThreads > 0
-          ? "in-progress"
-          : "not-started",
-    nextUnresolvedThread: next
-      ? { id: next.id, filePath: next.filePath, line: next.line ?? next.newLine }
-      : undefined,
-    newSinceLastReview: false,
-    newCommitCount: 0
-  };
-});
-const reviewProgressLabel = computed(() => {
-  switch (reviewProgress.value.completionState) {
-    case "complete": return "Complete";
-    case "ready-to-submit": return "Ready to submit";
-    case "in-progress": return "In progress";
-    default: return "Not started";
-  }
-});
-const reviewProgressTone = computed(() => {
-  switch (reviewProgress.value.completionState) {
-    case "complete": return "success" as const;
-    case "ready-to-submit": return "warning" as const;
-    case "in-progress": return "brand" as const;
-    default: return "neutral" as const;
-  }
-});
-const canMarkReviewComplete = computed(() => {
-  const progress = reviewProgress.value;
-  return (progress.completionState !== "complete"
-    || progress.newSinceLastReview
-    || !progress.lastReviewedSha)
-    && progress.unviewedFiles === 0
-    && progress.unresolvedDiscussions === 0
-    && (overview.value?.draftNotes.length ?? 0) === 0;
-});
-const commentProjectId = computed(() => overview.value?.selectedMergeRequest?.projectId);
+const nextUnresolvedThread = computed(() => overview.value?.threads.find((thread) => !thread.resolved && thread.resolvable !== false));
 const normalizedThreadSearchQuery = computed(() => threadSearchQuery.value.trim().toLocaleLowerCase());
 const filteredThreads = computed(() => {
   const threads = overview.value?.threads ?? [];
@@ -190,8 +172,6 @@ const filteredChangedFiles = computed(() => {
   return changedFiles.value.filter((file) => {
     if (query && !file.path.toLocaleLowerCase().includes(query)) return false;
     if (changedFileFilter.value === "new" && !file.newSinceLastReview) return false;
-    if (changedFileFilter.value === "unviewed" && file.viewed) return false;
-    if (changedFileFilter.value === "viewed" && !file.viewed) return false;
     if (changedFileFilter.value === "unresolved" && file.unresolvedThreadCount === 0) return false;
     if (changedFileFilter.value === "local" && !file.hasLocalEdit) return false;
     return true;
@@ -242,6 +222,188 @@ const localActionLabel = computed(() => {
 });
 
 function post(message: SidebarMessage): void { vscode.postMessage(message); }
+
+function parseDraftContext(key: string): { contextKey: string; context: ReviewContext } | undefined {
+  try {
+    const draftParts = JSON.parse(key) as unknown;
+    if (!Array.isArray(draftParts) || typeof draftParts[0] !== "string") return undefined;
+    const contextParts = JSON.parse(draftParts[0]) as unknown;
+    if (!Array.isArray(contextParts)
+      || typeof contextParts[0] !== "string"
+      || typeof contextParts[1] !== "string"
+      || typeof contextParts[2] !== "number"
+      || typeof contextParts[3] !== "string"
+      || typeof contextParts[4] !== "string"
+      || typeof contextParts[5] !== "string") return undefined;
+    return {
+      contextKey: draftParts[0],
+      context: {
+        instanceUrl: contextParts[0],
+        projectId: contextParts[1],
+        mergeRequestIid: contextParts[2],
+        baseSha: contextParts[3],
+        startSha: contextParts[4],
+        headSha: contextParts[5],
+        ...(typeof contextParts[6] === "string" ? { currentUserId: contextParts[6] } : {})
+      }
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function scopedKey(kind: string, ...parts: string[]): string {
+  const contextKey = reviewScopeKey.value;
+  return contextKey ? JSON.stringify([contextKey, kind, ...parts]) : "";
+}
+function overviewDraftKey(): string { return scopedKey("overview-draft"); }
+function replyDraftKey(threadId: string): string { return scopedKey("reply-draft", threadId); }
+function commentKey(threadId: string, commentId: string): string { return scopedKey("edit-draft", threadId, commentId); }
+function mutationSlot(kind: string, ...parts: string[]): string {
+  return scopedKey("mutation", kind, ...parts) || JSON.stringify(["no-review-context", kind, ...parts]);
+}
+function isMutationPending(slot: string): boolean { return Boolean(pendingMutations[slot]); }
+function mutationError(slot: string): string | undefined { return mutationErrors[slot]; }
+function mutationSlotMatches(slot: string, kind: string, parts: string[]): boolean {
+  try {
+    const parsed = JSON.parse(slot) as unknown[];
+    return parsed[0] === reviewScopeKey.value
+      && parsed[1] === "mutation"
+      && parsed[2] === kind
+      && parts.every((part, index) => parsed[index + 3] === part);
+  } catch {
+    return false;
+  }
+}
+function isMutationPendingFor(kind: string, ...parts: string[]): boolean {
+  return Object.keys(pendingMutations).some((slot) => mutationSlotMatches(slot, kind, parts));
+}
+function failedMutationSlotFor(kind: string, ...parts: string[]): string | undefined {
+  return Object.keys(failedMutations).find((slot) => mutationSlotMatches(slot, kind, parts));
+}
+function mutationErrorFor(kind: string, ...parts: string[]): string | undefined {
+  const slot = failedMutationSlotFor(kind, ...parts);
+  return slot ? mutationErrors[slot] : undefined;
+}
+function retryMutationFor(kind: string, ...parts: string[]): void {
+  const slot = failedMutationSlotFor(kind, ...parts);
+  if (slot) retryMutation(slot);
+}
+function reviewRequest(payload: SidebarMutationPayload, context: ReviewContext): ReviewMutationEnvelope {
+  const message = createReviewMutationRequest(payload, context);
+  if (!message) throw new Error("The current review context is unavailable.");
+  return message;
+}
+function postReviewAction(payload: SidebarMutationPayload): void {
+  const context = reviewContext.value;
+  if (!context) return;
+  post(reviewRequest(payload, context) as SidebarMessage);
+}
+
+interface ReviewMutationOptions {
+  body?: string;
+  draftKind?: DraftKind;
+  draftKey?: string;
+}
+
+function sendReviewMutation(slot: string, build: ReviewMutationBuilder, options: ReviewMutationOptions = {}): boolean {
+  if (pendingMutations[slot]) return false;
+  const context = reviewContext.value;
+  const contextKey = reviewScopeKey.value;
+  if (!context || !contextKey) {
+    mutationErrors[slot] = "The current review is not ready yet. Open the review and try again.";
+    return false;
+  }
+  const message = build(context, options.body);
+  pendingMutations[slot] = {
+    slot,
+    requestId: message.requestId,
+    context,
+    contextKey,
+    build,
+    body: options.body,
+    draftKind: options.draftKind,
+    draftKey: options.draftKey
+  };
+  delete failedMutations[slot];
+  delete mutationErrors[slot];
+  post(message as SidebarMessage);
+  return true;
+}
+
+function draftValue(record: ReviewMutationRecord): string | undefined {
+  if (!record.draftKey || !record.draftKind) return record.body;
+  if (record.draftKind === "reply") return replyDrafts[record.draftKey];
+  if (record.draftKind === "edit") return editDrafts[record.draftKey];
+  return overviewThreadDrafts[record.draftKey];
+}
+
+function clearSubmittedDraft(record: ReviewMutationRecord): void {
+  if (!record.draftKey || !record.draftKind || record.body === undefined) return;
+  if (record.draftKind === "reply" && replyDrafts[record.draftKey] === record.body) {
+    delete replyDrafts[record.draftKey];
+  } else if (record.draftKind === "edit" && editDrafts[record.draftKey] === record.body) {
+    delete editDrafts[record.draftKey];
+    delete editingComments[record.draftKey];
+  } else if (record.draftKind === "overview" && overviewThreadDrafts[record.draftKey] === record.body) {
+    delete overviewThreadDrafts[record.draftKey];
+    delete overviewThreadModes[record.draftKey];
+  }
+}
+
+function retryMutation(slot: string): void {
+  const failed = failedMutations[slot];
+  if (!failed) return;
+  if (reviewScopeKey.value !== failed.contextKey) {
+    mutationErrors[slot] = "The selected review changed. Return to the original review before retrying.";
+    return;
+  }
+  const body = draftValue(failed);
+  if (failed.draftKey && !body?.trim()) {
+    mutationErrors[slot] = "The draft is empty. Add text before retrying.";
+    return;
+  }
+  sendReviewMutation(slot, failed.build, {
+    body,
+    draftKind: failed.draftKind,
+    draftKey: failed.draftKey
+  });
+}
+
+function handleReviewMutationResult(message: ReviewMutationHostMessage): void {
+  const entry = Object.entries(pendingMutations).find(([, record]) => record.requestId === message.requestId);
+  if (!entry) return;
+  const [slot, record] = entry;
+  delete pendingMutations[slot];
+  if (message.ok) {
+    delete failedMutations[slot];
+    delete mutationErrors[slot];
+    clearSubmittedDraft(record);
+  } else {
+    failedMutations[slot] = record;
+    mutationErrors[slot] = message.errorMessage || "Could not save the review change.";
+  }
+  persist();
+}
+
+async function copyRetainedDraft(draft: RetainedDraft): Promise<void> {
+  const textarea = document.querySelector<HTMLTextAreaElement>(`[data-retained-draft-key="${CSS.escape(draft.key)}"]`);
+  textarea?.focus();
+  textarea?.select();
+  try {
+    await navigator.clipboard?.writeText(draft.body);
+  } catch {
+    // Selecting the read-only field still provides a recovery path when the
+    // Webview clipboard API is unavailable.
+  }
+  copiedRetainedDraftKey.value = draft.key;
+  if (retainedDraftCopyTimer !== undefined) window.clearTimeout(retainedDraftCopyTimer);
+  retainedDraftCopyTimer = window.setTimeout(() => {
+    copiedRetainedDraftKey.value = undefined;
+    retainedDraftCopyTimer = undefined;
+  }, 1600);
+}
+
 function persist(): void {
   vscode.setState({
     changedFilesHeight: changedFilesHeight.value,
@@ -277,41 +439,57 @@ function formatDate(value?: string): string {
     ? value
     : new Intl.DateTimeFormat("ja-JP", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
 }
-function commentKey(threadId: string, commentId: string): string { return `${threadId}:${commentId}`; }
 function isEditing(threadId: string, commentId: string): boolean { return editingComments[commentKey(threadId, commentId)] === true; }
 function startEdit(threadId: string, comment: ReviewComment): void {
   const key = commentKey(threadId, comment.id);
+  if (!key) return;
   editDrafts[key] = comment.body;
   editingComments[key] = true;
   persist();
 }
 function cancelEdit(threadId: string, commentId: string): void {
   const key = commentKey(threadId, commentId);
+  if (!key) return;
   delete editDrafts[key];
   delete editingComments[key];
   persist();
 }
 function saveEdit(threadId: string, commentId: string): void {
   const key = commentKey(threadId, commentId);
+  if (!key) return;
   const body = editDrafts[key] ?? "";
   if (!body.trim()) return;
-  post({ type: "editComment", threadId, commentId, body });
-  cancelEdit(threadId, commentId);
+  const slot = mutationSlot("edit-comment", threadId, commentId);
+  sendReviewMutation(slot, (context, submittedBody) => reviewRequest({ type: "editComment", threadId, commentId, body: submittedBody ?? "" }, context), {
+    body,
+    draftKind: "edit",
+    draftKey: key
+  });
 }
 function sendReply(threadId: string): void {
-  const body = replyDrafts[threadId] ?? "";
+  const key = replyDraftKey(threadId);
+  if (!key) return;
+  const body = replyDrafts[key] ?? "";
   if (!body.trim()) return;
-  post({ type: "addComment", threadId, body });
-  delete replyDrafts[threadId];
-  persist();
+  const slot = mutationSlot("reply", threadId);
+  sendReviewMutation(slot, (context, submittedBody) => reviewRequest({ type: "addComment", threadId, body: submittedBody ?? "" }, context), {
+    body,
+    draftKind: "reply",
+    draftKey: key
+  });
 }
 function addOverviewThread(): void {
   const body = overviewThreadDraft.value;
   if (!body.trim()) return;
-  post({ type: "addOverviewThread", body, mode: overviewThreadMode.value });
-  delete overviewThreadDrafts[mrKey.value];
-  delete overviewThreadModes[mrKey.value];
-  persist();
+  const key = overviewDraftKey();
+  if (!key) return;
+  const mode = overviewThreadMode.value;
+  const slot = mutationSlot("overview-thread");
+  sendReviewMutation(slot, (context, submittedBody) => reviewRequest({ type: "addOverviewThread", body: submittedBody ?? "", mode }, context), {
+    body,
+    draftKind: "overview",
+    draftKey: key
+  });
 }
 function scheduleOverviewComposerReveal(): void {
   if (overviewComposerRevealFrame !== undefined) return;
@@ -341,14 +519,30 @@ function updateOverviewThreadDraft(value: string): void {
   scheduleOverviewComposerReveal();
 }
 function setOverviewThreadMode(mode: ReviewSubmissionMode): void {
-  if (!mrKey.value) return;
-  overviewThreadModes[mrKey.value] = mode;
+  const key = overviewDraftKey();
+  if (!key) return;
+  overviewThreadModes[key] = mode;
   persist();
   post({ type: "setSubmissionMode", mode });
   scheduleOverviewComposerReveal();
 }
 function openThread(thread: ReviewThreadSummary): void {
-  if (thread.filePath) post({ type: "openFile", filePath: thread.filePath, line: thread.line, threadId: thread.id });
+  if (thread.filePath) postReviewAction({ type: "openFile", filePath: thread.filePath, line: thread.line, threadId: thread.id });
+}
+function toggleResolved(threadId: string): void {
+  sendReviewMutation(mutationSlot("resolve", threadId), (context) => reviewRequest({ type: "toggleResolved", threadId }, context));
+}
+function loadCommentReactions(threadId: string, commentId: string): void {
+  postReviewAction({ type: "loadCommentReactions", threadId, commentId });
+}
+function toggleCommentReaction(threadId: string, commentId: string, name: string): void {
+  sendReviewMutation(mutationSlot("reaction", threadId, commentId, name), (context) => reviewRequest({ type: "toggleCommentReaction", threadId, commentId, name }, context));
+}
+function publishReviewDraft(draftId: string): void {
+  sendReviewMutation(mutationSlot("publish-draft", draftId), (context) => reviewRequest({ type: "publishReviewDraft", draftId }, context));
+}
+function submitReview(): void {
+  sendReviewMutation(mutationSlot("submit-review"), (context) => reviewRequest({ type: "submitReview" }, context));
 }
 function collapseKey(thread: ReviewThreadSummary): string {
   return threadCollapseKey(mrKey.value || "no-merge-request", thread.id);
@@ -452,13 +646,13 @@ function currentCommitId(): string {
   return selectedCommitId.value;
 }
 function openChangedFile(path: string): void {
-  post({ type: "openFile", filePath: path });
+  postReviewAction({ type: "openFile", filePath: path });
 }
 function openNextUnresolved(): void {
-  const next = reviewProgress.value.nextUnresolvedThread;
+  const next = nextUnresolvedThread.value;
   if (!next) return;
   if (next.filePath) {
-    post({ type: "openFile", filePath: next.filePath, line: next.line, threadId: next.id });
+    postReviewAction({ type: "openFile", filePath: next.filePath, line: next.line ?? next.newLine, threadId: next.id });
     return;
   }
   void revealThread(next.id);
@@ -468,10 +662,7 @@ function openLatestChanges(): void {
   const filePath = (activeFile?.newSinceLastReview ? activeFile.path : undefined)
     ?? changedFiles.value.find((file) => file.newSinceLastReview)?.path
     ?? changedFiles.value[0]?.path;
-  if (filePath) post({ type: "openNewChangesFile", filePath });
-}
-function markReviewComplete(): void {
-  if (canMarkReviewComplete.value) post({ type: "markReviewComplete" });
+  if (filePath) postReviewAction({ type: "openNewChangesFile", filePath });
 }
 function openLocalTarget(): void {
   const target = localTarget.value;
@@ -540,6 +731,10 @@ function setThreadSort(event: Event): void {
 }
 function receiveState(event: MessageEvent<HostMessage<SidebarViewState, SidebarHostMessage>>): void {
   const message = event.data;
+  if (isReviewMutationResult(message)) {
+    handleReviewMutationResult(message);
+    return;
+  }
   if (message.type === "revealThread") {
     void revealThread(message.threadId);
     return;
@@ -548,7 +743,9 @@ function receiveState(event: MessageEvent<HostMessage<SidebarViewState, SidebarH
   if (message.type !== "state") return;
   stopReadyRetry();
   const selected = message.state.overview.selectedMergeRequest;
-  const nextMrKey = selected ? `${selected.projectId}!${selected.iid}` : "";
+  const nextMrKey = message.state.overview.reviewContext
+    ? reviewContextKey(message.state.overview.reviewContext)
+    : selected ? `selection:${selected.projectId}!${selected.iid}` : "";
   if (nextMrKey !== loadedMrKey) {
     loadedMrKey = nextMrKey;
     threadSearchQuery.value = "";
@@ -602,6 +799,13 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(overviewComposerRevealFrame);
     overviewComposerRevealFrame = undefined;
   }
+  if (retainedDraftCopyTimer !== undefined) {
+    window.clearTimeout(retainedDraftCopyTimer);
+    retainedDraftCopyTimer = undefined;
+  }
+  for (const key of Object.keys(pendingMutations)) delete pendingMutations[key];
+  for (const key of Object.keys(failedMutations)) delete failedMutations[key];
+  for (const key of Object.keys(mutationErrors)) delete mutationErrors[key];
   window.removeEventListener("message", receiveState);
 });
 </script>
@@ -645,15 +849,24 @@ onBeforeUnmount(() => {
 
     <GlEmptyState v-if="activeTab === 'review' && (!overview || overview.loadState === 'loading')" title="Loading merge request…" icon="spinner" />
     <GlEmptyState
-      v-else-if="activeTab === 'review' && overview && overview.loadState !== 'ready'"
-      :title="overview.errorMessage || 'No merge request available'"
+      v-else-if="activeTab === 'review' && overview?.loadState === 'error'"
+      :title="overview.errorMessage || 'Could not load merge request'"
+      description="Refresh the merge request to try again."
       icon="warning"
     >
       <template #actions><GlButton icon="retry" @click="post({ type: 'refreshReview' })">Retry</GlButton></template>
     </GlEmptyState>
+    <GlEmptyState
+      v-else-if="activeTab === 'review' && overview && (overview.loadState === 'empty' || !overview.selectedMergeRequest)"
+      title="No merge request selected"
+      description="Open My work to choose a merge request to review."
+      icon="information"
+    >
+      <template #actions><GlButton variant="confirm" @click="selectSidebarTab('my-work')">Open My work</GlButton></template>
+    </GlEmptyState>
 
     <div
-      v-else-if="activeTab === 'review' && overview?.selectedMergeRequest"
+      v-else-if="activeTab === 'review' && overview?.loadState === 'ready' && overview.selectedMergeRequest"
       id="review-panel"
       role="tabpanel"
       aria-labelledby="review-tab"
@@ -668,6 +881,27 @@ onBeforeUnmount(() => {
         <GlIcon name="warning" :size="13" />
         <span>Refresh failed. Showing cached review. {{ overview.errorMessage }}</span>
       </div>
+      <section v-if="retainedDrafts.length" class="retained-drafts" aria-label="Drafts from previous review revision">
+        <header class="retained-drafts-header">
+          <span><GlIcon name="warning" :size="12" />Drafts from a previous review revision</span>
+          <small>Review and copy before continuing.</small>
+        </header>
+        <article v-for="draft in retainedDrafts" :key="draft.key" class="retained-draft">
+          <div class="retained-draft-meta">
+            <strong>{{ draft.kind === "overview" ? "New comment" : draft.kind === "reply" ? "Reply" : "Edited comment" }}</strong>
+            <span>{{ draft.context.instanceUrl }} · {{ draft.context.projectId }}!{{ draft.context.mergeRequestIid }}</span>
+            <code :title="draft.context.headSha">{{ draft.context.headSha }}</code>
+          </div>
+          <textarea
+            :data-retained-draft-key="draft.key"
+            class="retained-draft-text"
+            :aria-label="`Previous ${draft.kind} draft for ${draft.context.projectId}!${draft.context.mergeRequestIid}`"
+            readonly
+            :value="draft.body"
+          />
+          <GlButton variant="link" size="small" @click="copyRetainedDraft(draft)">{{ copiedRetainedDraftKey === draft.key ? "Copied" : "Copy draft" }}</GlButton>
+        </article>
+      </section>
       <header class="mr-header">
         <div class="mr-main">
           <span class="review-context-label"><GlIcon name="comments" :size="12" />Review · Remote</span>
@@ -700,48 +934,6 @@ onBeforeUnmount(() => {
           <span><strong>{{ overview.commits.length }}</strong> commits</span>
           <span><strong>{{ overview.resolvedThreads }}/{{ overview.resolvedThreads + overview.unresolvedThreads }}</strong> resolved</span>
         </div>
-
-        <section class="review-progress" aria-label="Review progress">
-          <header class="review-progress-header">
-            <span class="review-progress-title"><GlIcon name="check-circle" :size="13" />Review progress</span>
-            <GlBadge :tone="reviewProgressTone" pill>{{ reviewProgressLabel }}</GlBadge>
-          </header>
-          <div
-            class="review-progress-bar"
-            role="progressbar"
-            aria-label="Review completion"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            :aria-valuenow="reviewProgress.completionPercent"
-          >
-            <span :style="{ width: `${reviewProgress.completionPercent}%` }" />
-          </div>
-          <div class="review-progress-metrics">
-            <span><strong>{{ reviewProgress.viewedFiles }}/{{ reviewProgress.totalFiles }}</strong> files viewed</span>
-            <span><strong>{{ reviewProgress.resolvedDiscussions }}/{{ reviewProgress.totalDiscussions }}</strong> discussions resolved</span>
-          </div>
-          <div v-if="reviewProgress.nextUnresolvedThread || canMarkReviewComplete" class="review-progress-actions">
-            <GlButton
-              v-if="reviewProgress.nextUnresolvedThread"
-              class="review-progress-next-action"
-              size="small"
-              icon="warning"
-              @click="openNextUnresolved"
-            >Next unresolved</GlButton>
-            <GlButton
-              v-else-if="canMarkReviewComplete"
-              size="small"
-              variant="confirm"
-              icon="check"
-              @click="markReviewComplete"
-            >Mark review complete</GlButton>
-          </div>
-          <div v-if="reviewProgress.newSinceLastReview" class="new-since-review" role="status">
-            <GlIcon name="notifications" :size="12" />
-            <span><strong>New since last review</strong><small>{{ reviewProgress.newCommitCount }} commit{{ reviewProgress.newCommitCount === 1 ? '' : 's' }}</small></span>
-            <GlButton size="small" variant="link" @click="openLatestChanges">Review new changes</GlButton>
-          </div>
-        </section>
       </header>
 
       <section class="local-workspace" aria-label="Local workspace" :title="localWorkspace?.repositoryRoot">
@@ -783,7 +975,7 @@ onBeforeUnmount(() => {
             :node="node"
             kind="branch"
             :branch="model?.branchTree.branch"
-            @open-branch="(branch, path) => post({ type: 'openBranchFile', branch, filePath: path })"
+            @open-branch="(branch, path) => postReviewAction({ type: 'openBranchFile', branch, filePath: path })"
             @open-changed="() => {}"
           />
         </div>
@@ -828,8 +1020,6 @@ onBeforeUnmount(() => {
                 <select v-model="changedFileFilter" aria-label="Filter changed files by status">
                   <option value="all">All files</option>
                   <option value="new">New since review</option>
-                  <option value="unviewed">Unviewed</option>
-                  <option value="viewed">Viewed</option>
                   <option value="unresolved">Needs review</option>
                   <option value="local">Local edits</option>
                 </select>
@@ -952,7 +1142,7 @@ onBeforeUnmount(() => {
                             :key="file.path"
                             type="button"
                             :disabled="file.collapsed || file.tooLarge"
-                            @click="post({ type: 'openCommitFile', commitId: commit.id, filePath: file.path })"
+                            @click="postReviewAction({ type: 'openCommitFile', commitId: commit.id, filePath: file.path })"
                           >
                             <GlStatusBadge :status="file.status" />
                             <span class="gl-truncate">{{ file.renamedFile && file.oldPath !== file.newPath ? `${file.oldPath} → ${file.newPath}` : file.path }}</span>
@@ -1067,9 +1257,9 @@ onBeforeUnmount(() => {
               <span class="thread-actions">
                 <GlThreadStatusAction
                   :resolved="thread.resolved"
-                  :pending="thread.pending"
+                  :pending="thread.pending || isMutationPending(mutationSlot('resolve', thread.id))"
                   :resolvable="thread.resolvable !== false"
-                  @toggle="post({ type: 'toggleResolved', threadId: thread.id })"
+                  @toggle="toggleResolved(thread.id)"
                 />
                 <GlButton
                   v-if="thread.filePath"
@@ -1082,6 +1272,11 @@ onBeforeUnmount(() => {
                 >Go to diff</GlButton>
               </span>
             </header>
+            <p v-if="mutationError(mutationSlot('resolve', thread.id))" class="mutation-error thread-mutation-error" role="alert">
+              <GlIcon name="warning" :size="12" />
+              <span>{{ mutationError(mutationSlot('resolve', thread.id)) }}</span>
+              <GlButton variant="link" size="small" @click="retryMutation(mutationSlot('resolve', thread.id))">Retry</GlButton>
+            </p>
 
             <Transition name="gl-collapse">
               <div v-if="!isThreadCollapsed(thread)" class="gl-collapse-shell">
@@ -1100,43 +1295,66 @@ onBeforeUnmount(() => {
                       <template #actions>
                         <GlButton v-if="comment.canEdit && !comment.pending" class="comment-edit-action" variant="link" size="small" icon="pencil" @click.stop="startEdit(thread.id, comment)">Edit</GlButton>
                       </template>
-                      <GlMarkdown :source="comment.body" :project-id="commentProjectId" />
+                      <GlMarkdown :source="comment.body" :review-context="reviewContext" />
                       <template #footer>
                         <GlReactionBar
                           :reactions="comment.reactions"
                           :loaded="comment.reactionsLoaded"
                           :loading="comment.reactionsLoading"
                           :error="comment.reactionError"
-                          :disabled="comment.pending"
-                          @load="post({ type: 'loadCommentReactions', threadId: thread.id, commentId: comment.id })"
-                          @toggle="name => post({ type: 'toggleCommentReaction', threadId: thread.id, commentId: comment.id, name })"
+                          :disabled="comment.pending || isMutationPendingFor('reaction', thread.id, comment.id)"
+                          @load="loadCommentReactions(thread.id, comment.id)"
+                          @toggle="name => toggleCommentReaction(thread.id, comment.id, name)"
                         />
                       </template>
                     </GlComment>
                     <GlCommentForm
                       v-else
                       v-model="editDrafts[commentKey(thread.id, comment.id)]"
+                      :class="{ 'mutation-pending': isMutationPending(mutationSlot('edit-comment', thread.id, comment.id)) }"
+                      :submitting="isMutationPending(mutationSlot('edit-comment', thread.id, comment.id))"
+                      :aria-busy="isMutationPending(mutationSlot('edit-comment', thread.id, comment.id))"
                       aria-label="Edit comment"
                       submit-label="Save"
                       cancel-label="Cancel"
                       compact
-                      :project-id="commentProjectId"
+                      :review-context="reviewContext"
                       @update:model-value="persist"
                       @submit="saveEdit(thread.id, comment.id)"
                       @cancel="cancelEdit(thread.id, comment.id)"
                     />
+                    <p v-if="isEditing(thread.id, comment.id) && isMutationPending(mutationSlot('edit-comment', thread.id, comment.id))" class="mutation-status" role="status"><GlIcon name="spinner" class="spin" :size="12" /> Saving…</p>
+                    <p v-if="!isEditing(thread.id, comment.id) && mutationErrorFor('reaction', thread.id, comment.id)" class="mutation-error" role="alert">
+                      <GlIcon name="warning" :size="12" />
+                      <span>{{ mutationErrorFor('reaction', thread.id, comment.id) }}</span>
+                      <GlButton variant="link" size="small" @click="retryMutationFor('reaction', thread.id, comment.id)">Retry</GlButton>
+                    </p>
+                    <p v-if="isEditing(thread.id, comment.id) && mutationError(mutationSlot('edit-comment', thread.id, comment.id))" class="mutation-error" role="alert">
+                      <GlIcon name="warning" :size="12" />
+                      <span>{{ mutationError(mutationSlot('edit-comment', thread.id, comment.id)) }}</span>
+                      <GlButton variant="link" size="small" @click="retryMutation(mutationSlot('edit-comment', thread.id, comment.id))">Retry</GlButton>
+                    </p>
                   </template>
                   <GlCommentForm
-                    v-if="!thread.pending"
-                    :model-value="replyDrafts[thread.id] ?? ''"
+                    v-if="!thread.pending || isMutationPending(mutationSlot('reply', thread.id)) || Boolean(replyDrafts[replyDraftKey(thread.id)])"
+                    :model-value="replyDrafts[replyDraftKey(thread.id)] ?? ''"
+                    :class="{ 'mutation-pending': isMutationPending(mutationSlot('reply', thread.id)) }"
+                    :submitting="isMutationPending(mutationSlot('reply', thread.id))"
+                    :aria-busy="isMutationPending(mutationSlot('reply', thread.id))"
                     aria-label="Reply to thread"
                     placeholder="Reply…"
                     submit-label="Reply"
                     compact
-                    :project-id="commentProjectId"
-                    @update:model-value="value => { replyDrafts[thread.id] = value; persist(); }"
+                    :review-context="reviewContext"
+                    @update:model-value="value => { const key = replyDraftKey(thread.id); if (key) replyDrafts[key] = value; persist(); }"
                     @submit="sendReply(thread.id)"
                   />
+                  <p v-if="mutationError(mutationSlot('reply', thread.id))" class="mutation-error" role="alert">
+                    <GlIcon name="warning" :size="12" />
+                    <span>{{ mutationError(mutationSlot('reply', thread.id)) }}</span>
+                    <GlButton variant="link" size="small" @click="retryMutation(mutationSlot('reply', thread.id))">Retry</GlButton>
+                  </p>
+                  <p v-if="isMutationPending(mutationSlot('reply', thread.id))" class="mutation-status" role="status"><GlIcon name="spinner" class="spin" :size="12" /> Sending…</p>
                 </div>
               </div>
             </Transition>
@@ -1157,11 +1375,16 @@ onBeforeUnmount(() => {
                 variant="link"
                 size="small"
                 :loading="draft.pending"
-                :disabled="reviewSubmissionPending && !draft.pending"
-                @click="post({ type: 'publishReviewDraft', draftId: draft.id })"
+                :disabled="draft.pending || isMutationPending(mutationSlot('publish-draft', draft.id)) || (reviewSubmissionPending && !draft.pending)"
+                @click="publishReviewDraft(draft.id)"
               >Post as comment</GlButton>
             </header>
-            <GlMarkdown :source="draft.body" :project-id="commentProjectId" />
+            <GlMarkdown :source="draft.body" :review-context="reviewContext" />
+            <p v-if="mutationError(mutationSlot('publish-draft', draft.id))" class="mutation-error" role="alert">
+              <GlIcon name="warning" :size="12" />
+              <span>{{ mutationError(mutationSlot('publish-draft', draft.id)) }}</span>
+              <GlButton variant="link" size="small" @click="retryMutation(mutationSlot('publish-draft', draft.id))">Retry</GlButton>
+            </p>
           </article>
         </section>
 
@@ -1174,6 +1397,7 @@ onBeforeUnmount(() => {
                 type="button"
                 aria-label="Post as comment"
                 :aria-pressed="overviewThreadMode === 'comment'"
+                :disabled="isMutationPending(mutationSlot('overview-thread'))"
                 title="Post immediately as a comment"
                 @click="setOverviewThreadMode('comment')"
               >Comment</button>
@@ -1181,6 +1405,7 @@ onBeforeUnmount(() => {
                 type="button"
                 aria-label="Post as review"
                 :aria-pressed="overviewThreadMode === 'review'"
+                :disabled="isMutationPending(mutationSlot('overview-thread'))"
                 title="Keep pending until you submit the review"
                 @click="setOverviewThreadMode('review')"
               >Review</button>
@@ -1192,15 +1417,24 @@ onBeforeUnmount(() => {
           <GlCommentForm
             v-model="overviewThreadDraft"
             class="new-thread-form"
+            :class="{ 'mutation-pending': isMutationPending(mutationSlot('overview-thread')) }"
+            :submitting="isMutationPending(mutationSlot('overview-thread'))"
+            :aria-busy="isMutationPending(mutationSlot('overview-thread'))"
             aria-label="Add review thread"
             :placeholder="overviewThreadMode === 'comment' ? 'Add a comment…' : 'Add to your review…'"
             :submit-label="overviewThreadMode === 'comment' ? 'Comment' : 'Add to review'"
             compact
-            :project-id="commentProjectId"
+            :review-context="reviewContext"
             @focusin="scheduleOverviewComposerReveal"
             @update:model-value="updateOverviewThreadDraft"
             @submit="addOverviewThread"
           />
+          <p v-if="isMutationPending(mutationSlot('overview-thread'))" class="mutation-status" role="status"><GlIcon name="spinner" class="spin" :size="12" /> Sending…</p>
+          <p v-if="mutationError(mutationSlot('overview-thread'))" class="mutation-error" role="alert">
+            <GlIcon name="warning" :size="12" />
+            <span>{{ mutationError(mutationSlot('overview-thread')) }}</span>
+            <GlButton variant="link" size="small" @click="retryMutation(mutationSlot('overview-thread'))">Retry</GlButton>
+          </p>
         </div>
 
         <section v-if="overview.draftNotes.length" class="review-submit-tray" aria-label="Review submission">
@@ -1209,14 +1443,21 @@ onBeforeUnmount(() => {
             <span><strong>Review ready to submit</strong><small>Draft comments stay private until submitted.</small></span>
           </div>
           <div class="review-submit-tray-actions">
-            <GlButton v-if="reviewProgress.nextUnresolvedThread" size="small" variant="link" @click="openNextUnresolved">Next unresolved</GlButton>
+            <GlButton v-if="nextUnresolvedThread" size="small" variant="link" @click="openNextUnresolved">Next unresolved</GlButton>
             <GlButton
               variant="confirm"
               size="small"
-              :loading="reviewSubmissionPending"
-              @click="post({ type: 'submitReview' })"
+              :loading="reviewSubmissionPending || isMutationPending(mutationSlot('submit-review'))"
+              :disabled="isMutationPending(mutationSlot('submit-review'))"
+              @click="submitReview"
             >Submit review</GlButton>
           </div>
+          <p v-if="isMutationPending(mutationSlot('submit-review'))" class="mutation-status review-submit-error" role="status"><GlIcon name="spinner" class="spin" :size="12" /> Sending…</p>
+          <p v-if="mutationError(mutationSlot('submit-review'))" class="mutation-error review-submit-error" role="alert">
+            <GlIcon name="warning" :size="12" />
+            <span>{{ mutationError(mutationSlot('submit-review')) }}</span>
+            <GlButton variant="link" size="small" @click="retryMutation(mutationSlot('submit-review'))">Retry</GlButton>
+          </p>
         </section>
       </GlSection>
     </div>
@@ -1254,6 +1495,28 @@ onBeforeUnmount(() => {
 .auth-prompt { display: flex; align-items: center; gap: var(--gl-spacing-8); padding: var(--gl-spacing-8); color: var(--gl-text-subtle); background: var(--gl-surface-raised); }
 .auth-prompt > span { flex: 1; }
 .review-loaded { width: 100%; min-width: 0; max-width: 100%; display: grid; align-content: start; gap: var(--gl-spacing-12); }
+.retained-drafts {
+  min-width: 0;
+  display: grid;
+  gap: var(--gl-spacing-4);
+  margin: 0 var(--gl-spacing-8);
+  padding: var(--gl-spacing-6) var(--gl-spacing-8);
+  border: 1px solid color-mix(in srgb, var(--gl-feedback-warning) 42%, var(--gl-border-default));
+  border-left: 2px solid var(--gl-feedback-warning);
+  border-radius: var(--gl-radius-sm);
+  background: color-mix(in srgb, var(--gl-feedback-warning) 6%, var(--gl-surface-raised));
+}
+.retained-drafts-header { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: var(--gl-spacing-8); color: var(--gl-text-default); font-size: 11px; }
+.retained-drafts-header > span { min-width: 0; display: inline-flex; align-items: center; gap: var(--gl-spacing-4); font-weight: 600; }
+.retained-drafts-header > span > .gl-icon { color: var(--gl-feedback-warning); }
+.retained-drafts-header small { color: var(--gl-text-subtle); font-size: 10px; }
+.retained-draft { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--gl-spacing-4) var(--gl-spacing-8); padding-top: var(--gl-spacing-4); border-top: 1px solid var(--gl-border-subtle); }
+.retained-draft-meta { min-width: 0; grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 10px; }
+.retained-draft-meta strong { color: var(--gl-text-default); }
+.retained-draft-meta span { min-width: 0; grid-row: 2; grid-column: 1 / -1; overflow-wrap: anywhere; }
+.retained-draft-meta code { max-width: 16ch; grid-column: 2; grid-row: 1; overflow: hidden; color: var(--gl-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
+.retained-draft-text { width: 100%; min-width: 0; min-height: 48px; max-height: 112px; resize: vertical; padding: var(--gl-spacing-4); border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-sm); color: var(--gl-text-default); background: var(--gl-surface-raised); font: 11px/1.4 var(--vscode-editor-font-family); }
+.retained-draft > .gl-button { align-self: end; white-space: nowrap; }
 .review-status-banner {
   min-width: 0;
   display: flex;
@@ -1291,20 +1554,9 @@ onBeforeUnmount(() => {
 .branch-flow button :deep(.gl-technical-identifier) { flex: 1; }
 .mr-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 11px; }
 .mr-summary strong { color: var(--gl-text-strong); }
-.review-progress { grid-column: 1 / -1; display: grid; gap: var(--gl-spacing-6); padding: var(--gl-spacing-8); border: 1px solid var(--gl-border-default); border-left: 2px solid var(--gl-feedback-brand); border-radius: var(--gl-radius-sm); background: color-mix(in srgb, var(--gl-feedback-brand) 5%, var(--gl-surface-raised)); }
-.review-progress-header, .review-progress-actions, .review-submit-tray, .review-submit-tray-copy, .review-submit-tray-actions { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-6); }
-.review-progress-header, .review-submit-tray { justify-content: space-between; }
-.review-progress-title { display: inline-flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-strong); font-size: 11px; font-weight: 600; }
-.review-progress-title .gl-icon { color: var(--gl-feedback-brand); }
-.review-progress-bar { height: 4px; overflow: hidden; border-radius: 999px; background: var(--gl-border-subtle); }
-.review-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--gl-feedback-brand); transition: width var(--gl-motion-duration-standard) var(--gl-motion-ease-standard); }
-.review-progress-metrics { display: flex; flex-wrap: wrap; gap: var(--gl-spacing-4) var(--gl-spacing-12); color: var(--gl-text-subtle); font-size: 11px; }
-.review-progress-metrics strong { color: var(--gl-text-strong); }
-.new-since-review { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-4); padding: var(--gl-spacing-2) 0 var(--gl-spacing-2) var(--gl-spacing-6); border-left: 2px solid var(--gl-feedback-warning); color: var(--gl-feedback-warning); }
-.new-since-review > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
-.new-since-review small { overflow: hidden; color: var(--gl-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
-.review-progress-actions { justify-content: flex-start; flex-wrap: wrap; }
-.review-progress-next-action { border-color: color-mix(in srgb, var(--gl-feedback-brand) 55%, var(--gl-border-default)); }
+.review-submit-tray, .review-submit-tray-copy, .review-submit-tray-actions { min-width: 0; display: flex; align-items: center; gap: var(--gl-spacing-6); }
+.review-submit-tray { justify-content: space-between; flex-wrap: wrap; }
+.review-submit-error { flex-basis: 100%; order: 3; }
 .local-workspace {
   min-width: 0;
   display: grid;
@@ -1331,7 +1583,6 @@ onBeforeUnmount(() => {
   .local-workspace-row { flex-wrap: wrap; }
   .local-current-branch { order: 2; flex-basis: calc(100% - 64px); }
   .local-dirty { font-size: 10px; }
-  .review-progress-actions { justify-content: flex-start; }
 }
 .branch-explorer { max-height: 220px; padding: var(--gl-spacing-8); overflow: auto; border-left: 2px solid var(--gl-feedback-brand); background: var(--gl-surface-raised); }
 .tree { display: grid; gap: var(--gl-spacing-2); }
@@ -1459,6 +1710,24 @@ select { min-height: 24px; border: 1px solid var(--gl-border-default); border-ra
 .submission-mode button[aria-pressed="true"] { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, var(--gl-feedback-brand)); }
 .submission-mode-help { min-width: 0; overflow: hidden; color: var(--gl-text-subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .new-thread-form { border: 1px solid var(--gl-border-default); border-radius: var(--gl-radius-md); }
+.sidebar-shell :deep(.new-thread-form .hint) { color: var(--vscode-editor-foreground, var(--gl-text-default)); }
+.sidebar-shell :deep(.new-thread-form .gl-button.is-confirm),
+.sidebar-shell :deep(.new-thread-form .gl-button.is-confirm span) { color: #fff !important; }
+.mutation-pending { cursor: progress; }
+.mutation-pending :deep(button[type="submit"]) { pointer-events: none; }
+.mutation-error, .mutation-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--gl-spacing-4);
+  margin: var(--gl-spacing-4) 0 0;
+  color: var(--gl-text-subtle);
+  font-size: 11px;
+  line-height: 1.3;
+}
+.mutation-error { color: var(--gl-feedback-danger); }
+.mutation-error > span, .mutation-status > span { min-width: 0; flex: 1; }
+.thread-mutation-error { margin: 0; padding: var(--gl-spacing-4) var(--gl-spacing-8); border-bottom: 1px solid var(--gl-border-subtle); background: var(--gl-feedback-danger-subtle); }
 .pending-review { min-width: 0; display: grid; gap: var(--gl-spacing-4); margin-bottom: var(--gl-spacing-8); padding: var(--gl-spacing-8); border: 1px solid color-mix(in srgb, var(--gl-feedback-warning) 40%, var(--gl-border-default)); border-radius: var(--gl-radius-md); background: var(--gl-feedback-warning-subtle); }
 .pending-review-header, .pending-review-note > header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--gl-spacing-8); }
 .pending-review-title { min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--gl-spacing-4); color: var(--gl-text-subtle); font-size: 11px; }

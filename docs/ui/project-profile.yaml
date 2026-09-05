@@ -73,7 +73,7 @@ user:
     - Working in a narrow Sidebar or a split editor with long technical content.
     - Needing to distinguish remote review state from local and pending work.
   needs:
-    - Find the next unresolved or unviewed item quickly.
+    - Find the next changed file or unresolved discussion quickly.
     - Preserve file and discussion context across navigation.
     - Trust that asynchronous actions are pending, completed, failed, or recoverable.
 

@@ -3,6 +3,27 @@ import test from "node:test";
 import * as glabCommand from "../glabCommand";
 import { GitLabReviewClient, toMergeRequestOption } from "../gitlabApi";
 
+test("loadMergeRequest rejects a push that races with diff retrieval", async () => {
+  const original = Object.getOwnPropertyDescriptor(glabCommand, "runGlab");
+  let metadataReads = 0;
+  Object.defineProperty(glabCommand, "runGlab", { configurable: true, value: async (args: string[]) => {
+    const endpoint = args[3];
+    if (endpoint === "projects/1/merge_requests/2") {
+      metadataReads += 1;
+      return { ok: true, stdout: JSON.stringify({ project_id: 1, iid: 2,
+        diff_refs: { base_sha: "base", start_sha: "start", head_sha: metadataReads === 1 ? "old" : "new" } }) };
+    }
+    if (endpoint === "user") return { ok: true, stdout: JSON.stringify({ id: 7 }) };
+    return { ok: true, stdout: "[]" };
+  } });
+  try {
+    await assert.rejects(new GitLabReviewClient("gitlab.example.com").loadMergeRequest({ projectId: "1", iid: 2 }), /changed while loading/);
+    assert.equal(metadataReads, 2);
+  } finally {
+    if (original) Object.defineProperty(glabCommand, "runGlab", original);
+  }
+});
+
 test("toMergeRequestOption retains the merge request state", () => {
   const option = toMergeRequestOption({
     iid: 42,
@@ -694,6 +715,8 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
           stdout: JSON.stringify({
             iid: 2,
             project_id: 1,
+            source_project_id: 9,
+            web_url: "https://gitlab.example.com/group/target/-/merge_requests/2",
             title: "Ownership fallback",
             state: "opened",
             source_branch: "feature",
@@ -706,6 +729,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
           })
         };
       }
+      if (endpoint === "projects/9") return { ok: true, stdout: JSON.stringify({ id: 9, web_url: "https://gitlab.example.com/me/fork" }) };
       if (endpoint?.endsWith("/diffs?per_page=100")) {
         receivedDiffArgs.push(args);
         return {
@@ -760,6 +784,7 @@ test("loadMergeRequest tolerates optional lookup failures and preserves fallback
       [fallbackCommit]
     );
     assert.deepEqual(state.threads.map((thread) => thread.id), ["discussion-1", "discussion-2"]);
+    assert.equal(state.projectPath, "https://gitlab.example.com/me/fork");
     assert.equal(state.threads[0].comments[0].canEdit, false);
     assert.deepEqual(state.commits, [fallbackCommit]);
     assert.deepEqual(state.reviewers.map((reviewer) => reviewer.username), ["reviewer-one", "reviewer-two"]);

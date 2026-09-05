@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
+import type { ReviewContext } from "../../../src/reviewContext";
 import { installCommentImageHostMock } from "../../stories/commentImageHostMock";
 import GlMarkdown from "./GlMarkdown.vue";
 
@@ -19,10 +20,37 @@ function renderPrivateMarkdown(args: Record<string, unknown>) {
   return {
     components: { GlMarkdown },
     setup() {
-      const projectId = `storybook-markdown-${crypto.randomUUID()}`;
-      return { args, projectId };
+      const reviewContext = storyReviewContext(`storybook-markdown-${crypto.randomUUID()}`);
+      return { args, reviewContext };
     },
-    template: '<GlMarkdown v-bind="args" :project-id="projectId" />'
+    template: '<GlMarkdown v-bind="args" :review-context="reviewContext" />'
+  };
+}
+
+function storyReviewContext(projectId: string, instanceUrl = "https://gitlab.example.com"): ReviewContext {
+  return {
+    instanceUrl,
+    projectId,
+    mergeRequestIid: 17,
+    baseSha: "base",
+    startSha: "start",
+    headSha: "head",
+    currentUserId: "7"
+  };
+}
+
+const resolvedInstances: string[] = [];
+
+function renderCrossInstanceMarkdown(args: Record<string, unknown>) {
+  return {
+    components: { GlMarkdown },
+    setup() {
+      const projectId = `storybook-markdown-${crypto.randomUUID()}`;
+      const contextA = storyReviewContext(projectId, "https://gitlab.example.com/instance-a");
+      const contextB = storyReviewContext(projectId, "https://gitlab.example.com/instance-b");
+      return { args, contextA, contextB };
+    },
+    template: '<div><GlMarkdown v-bind="args" :review-context="contextA" /><GlMarkdown v-bind="args" :review-context="contextB" /></div>'
   };
 }
 
@@ -104,5 +132,35 @@ export const ResolveFailureRetryAndGitLabFallback: Story = {
 
     await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
     await expect(await canvas.findByRole("button", { name: "View Unavailable image at full size" })).toHaveAttribute("src");
+  }
+};
+
+export const ResolutionCacheIsScopedByInstanceContext: Story = {
+  args: { source: "![Scoped private image](/uploads/story/same-path.png)" },
+  render: renderCrossInstanceMarkdown,
+  beforeEach: () => {
+    resolvedInstances.length = 0;
+    return installCommentImageHostMock({
+      resolve: (message) => {
+        resolvedInstances.push(message.reviewContext.instanceUrl);
+        return {
+          ok: true,
+          displayUri: message.reviewContext.instanceUrl.endsWith("instance-a")
+            ? "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+            : "data:image/gif;base64,R0lGODlhAQABAIAAAAD/AP///ywAAAAAAQABAAACAUwAOw=="
+        };
+      }
+    });
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(resolvedInstances).toHaveLength(2));
+    await expect([...resolvedInstances].sort()).toEqual([
+      "https://gitlab.example.com/instance-a",
+      "https://gitlab.example.com/instance-b"
+    ]);
+    const images = await canvas.findAllByRole("button", { name: "View Scoped private image at full size" });
+    await expect(images).toHaveLength(2);
+    await expect(images[0].getAttribute("src")).not.toBe(images[1].getAttribute("src"));
   }
 };

@@ -35,6 +35,8 @@
 - Latest-push changed and unchanged-file states.
 - Large-window navigation, full-file loading/error, and empty/unsupported diff.
 - Local edit ready, saving, save failure, and recovery with draft retained.
+- Comment pending, failed, and changed-context states with input retained.
+- Historical diff is read-only for new comments and offers the current MR diff.
 - Resolved, ordinary non-resolvable, and pending discussions.
 
 ## Interaction priorities

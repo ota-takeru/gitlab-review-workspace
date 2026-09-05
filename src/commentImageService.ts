@@ -11,6 +11,7 @@ import {
 } from "./commentImageTypes";
 import { getGitLabHostname } from "./glabAuthUtils";
 import { runGlab, runGlabBinary } from "./glabCommand";
+import { normalizeInstanceUrl } from "./reviewContext";
 
 const maxCacheFiles = 100;
 const maxCacheBytes = 150 * 1024 * 1024;
@@ -40,6 +41,7 @@ export interface ConfiguredCommentImageHost {
   hostname: string;
   host: string;
   origin: string;
+  instanceUrl: string;
 }
 
 interface ParsedImagePath {
@@ -93,7 +95,7 @@ export class CommentImageService {
   async resolve(message: ResolveCommentImageMessage): Promise<CommentImageResolveResult> {
     const host = this.getConfiguredHost();
     const parsed = parseCommentImagePath(message.imagePath, host);
-    const key = `${host.host}:${message.projectId}:${parsed.secret}:${parsed.filename}`;
+    const key = `${host.instanceUrl}:${message.projectId}:${parsed.secret}:${parsed.filename}`;
     const existing = this.pendingResolves.get(key);
     if (existing) return existing;
     const pending = this.resolveOnce(message.projectId, parsed, host)
@@ -137,8 +139,9 @@ export class CommentImageService {
     const hostname = getGitLabHostname(configured);
     if (!hostname) throw new CommentImageServiceError("The configured GitLab host is invalid.");
     try {
-      const url = new URL(configured.includes("://") ? configured : `https://${configured}`);
-      return { hostname, host: url.host.toLowerCase(), origin: url.origin };
+      const instanceUrl = normalizeInstanceUrl(configured);
+      const url = new URL(instanceUrl);
+      return { hostname, host: url.host.toLowerCase(), origin: url.origin, instanceUrl };
     } catch {
       throw new CommentImageServiceError("The configured GitLab host is invalid.");
     }
@@ -193,12 +196,12 @@ export class CommentImageService {
 
   private cachePath(host: ConfiguredCommentImageHost, projectId: string, parsed: ParsedImagePath, mimeType: CommentImageMimeType): string {
     const extension = extensionForMimeType(mimeType);
-    const key = commentImageCacheKey(host.host, projectId, parsed.secret, parsed.filename);
+    const key = commentImageCacheKey(host.instanceUrl, projectId, parsed.secret, parsed.filename);
     return path.join(this.cacheRootPath, `${key}${extension}`);
   }
 
   private cachePaths(host: ConfiguredCommentImageHost, projectId: string, parsed: ParsedImagePath): string[] {
-    return commentImageCachePaths(this.cacheRootPath, host.host, projectId, parsed.secret, parsed.filename);
+    return commentImageCachePaths(this.cacheRootPath, host.instanceUrl, projectId, parsed.secret, parsed.filename);
   }
 
   private async getProjectImageUrl(
