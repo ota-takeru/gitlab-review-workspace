@@ -2,7 +2,7 @@
   "name": "gitlab-review-workspace",
   "displayName": "%extension.displayName%",
   "description": "%extension.description%",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "publisher": "ota-takeru",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/gitlab-review.png",
