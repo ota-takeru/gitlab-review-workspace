@@ -1,70 +1,72 @@
 # GitLab Review Workspace
 
-GitLabのMerge Requestを、VS Codeから離れずに確認・レビューするための拡張機能です。変更ファイル、コミット、ディスカッション、ローカル編集を1つのレビュー環境にまとめます。
+**English** | [日本語](./README.ja.md)
+
+GitLab Review Workspace is a VS Code extension for reviewing GitLab Merge Requests without leaving the editor. It brings changed files, commits, discussions, and local review edits into one focused review environment.
 
 > [!NOTE]
-> GitLab Review Workspaceはコミュニティ製の非公式拡張です。GitLab Inc.による公式製品ではありません。
+> GitLab Review Workspace is an unofficial community extension and is not an official product of GitLab Inc.
 
-## 主な機能
+## Features
 
-- Activity Barの`GitLab Review`からMRを選択・更新
-- 変更ファイルと差分統計をツリー表示
-- MR全体またはコミット単位で変更を確認
-- 新しいpushを検出し、前回のheadから追加された変更だけを比較
-- コミット差分を閲覧し、現在のMR差分へ戻ってコメント
-- 差分行のクリック・ドラッグ選択からディスカッションを作成
-- VS Code標準diff editorでMR差分を開き、Comment APIからディスカッションを作成・返信
-- コメントの返信、編集、Resolve/Reopen
-- Changed filesをパスと状態（新規push・未解決・ローカル編集）で絞り込み
-- MR内のレビューコメントを本文・投稿者・ファイルパスで検索
-- GitLab Todo通知から対象MRへ移動
-- ソース/ターゲットブランチのファイルツリーを閲覧
-- レビュー用のローカル編集を保存し、MR差分と区別して表示
-- 通信失敗時にも直近のレビューを表示する限定キャッシュ
+- Select and refresh Merge Requests from the `GitLab Review` Activity Bar view
+- Browse changed files and diff statistics in a tree
+- Review the whole MR or inspect changes commit by commit
+- Detect new pushes and compare only the changes added since the previous head
+- Inspect historical commit diffs and jump back to the current MR diff for commenting
+- Create discussions by clicking or selecting lines in a diff
+- Open MR changes in VS Code's native diff editor and use the Comment API for discussions and replies
+- Reply to comments, edit comments, and Resolve/Reopen discussions
+- Filter changed files by path and state, including new-push changes, unresolved discussions, and local edits
+- Search review comments by body, author, or file path
+- Open MRs directly from GitLab Todo notifications
+- Browse source and target branch file trees
+- Save local review edits separately from the MR diff
+- Keep a limited cached copy of the latest review for temporary network failures
 
-## 画面構成
+## Review surfaces
 
-- **My work**: 自分の作業一覧からレビューするMRを選択
-- **Sidebar**: 選択したMRの変更ファイル、コミット、レビュースレッドを移動
-- **VS Code diff editor**: 主なレビュー画面。標準のコードナビゲーションとComment APIによるインラインディスカッション
-- **Review file panel（Legacy Viewer）**: MR差分・コミット差分、ローカル差分、インラインディスカッション、ローカル編集
-- **Branch file editor**: GitLab上のブランチファイルを読み取り専用で表示
+- **My work**: choose an MR from work that needs your attention
+- **Sidebar**: navigate changed files, commits, and review threads for the selected MR
+- **VS Code diff editor**: the primary review surface, with native code navigation and inline discussions through the Comment API
+- **Review file panel (Legacy Viewer)**: review MR diffs, commit diffs, local diffs, inline discussions, and local edits
+- **Branch file editor**: browse files from GitLab branches in read-only mode
 
-サイドバーの変更ファイルまたはレビュースレッドを選ぶと、標準diff editorで対象ファイルを開き、スレッドの行までスクロールします。従来のReview file panelも残してあり、`GitLab Review: Open Review File in Legacy Viewer`から開けます。
+Selecting a changed file or review thread in the Sidebar opens the file in VS Code's native diff editor and reveals the relevant line. The previous Review file panel remains available through `GitLab Review: Open Review File in Legacy Viewer`.
 
-標準diff editorのコメント入力ではMarkdownを利用できます。画像は入力欄への貼り付けでGitLabへアップロードしてMarkdownを挿入するほか、`Attach Image and Comment`でファイルを選択し、現在の本文と画像をまとめて投稿できます。
+Comment inputs in the native diff editor support Markdown. Images can be pasted directly into a comment input, which uploads them to GitLab and inserts the corresponding Markdown. You can also use `Attach Image and Comment` to choose a file and submit the current text together with the image.
 
-異なるMRや差分版の入力を保持していて貼り付け先を確定できない場合、画像貼り付けは無効になります。その場合は投稿先の入力欄で`Attach Image and Comment`を使用してください。
+Image pasting is disabled when multiple retained review contexts make the target ambiguous. In that case, use `Attach Image and Comment` from the intended comment input.
 
-表示中の差分は接続先・MR・SHAに固定されます。接続先や差分が変わった場合は古い入力からの投稿を止め、本文を残します。過去コミットは閲覧用で、現在のMR差分を開いてから新規コメントを作成します。レビュー進捗の割合や確認済み管理は現在の画面には表示しません。
+Open diffs are bound to a specific GitLab instance, Merge Request, and SHA. If that context changes, stale inputs are prevented from posting while their draft text is retained. Historical commits are read-only for new discussions; reopen the current MR diff before adding a new comment. Review-percentage and viewed-file progress indicators are intentionally not shown in the current UI.
 
-旧バージョンのホスト未分離キャッシュは自動移行せず、MRを再取得します。保存済みの旧ローカル編集は削除しません。`GitLab Review: Recover Local Drafts from Earlier Versions`で内容を開き、対象を確認してコピーできます。
+Older unscoped cache entries are not migrated automatically and the MR is fetched again. Saved local edits from earlier versions are not deleted. Use `GitLab Review: Recover Local Drafts from Earlier Versions` to inspect and copy them.
 
-## 必要環境
+## Requirements
 
-- VS Code 1.97以降
+- VS Code 1.97 or later
 - [GitLab CLI (`glab`)](https://gitlab.com/gitlab-org/cli)
-- `glab auth login`済みのGitLabアカウント
+- A GitLab account authenticated with `glab auth login`
 
-拡張機能はGitLabトークンを保存しません。認証は`glab`とOSの資格情報ストアに委ねます。
+The extension does not store GitLab access tokens. Authentication is delegated to `glab` and the operating system's credential store.
 
-## インストール
+## Installation
 
-Visual Studio Marketplaceから`GitLab Review Workspace`を検索してインストールします。
+Install `GitLab Review Workspace` from the Visual Studio Marketplace.
 
-コマンドラインからインストールする場合は次を実行します。
+From the command line:
 
 ```bash
 code --install-extension ota-takeru.gitlab-review-workspace
 ```
 
-GitHub Releasesで配布している`.vsix`を使う場合は、VS CodeのExtensionsビュー右上の`…`から`Install from VSIX...`を選択してください。
+If you use a `.vsix` from GitHub Releases, open the VS Code Extensions view, choose `…`, and select `Install from VSIX...`.
 
-インストール後、`glab auth login`を実行してからActivity Barの`GitLab Review`を開いてください。
+After installation, run `glab auth login` and open `GitLab Review` from the Activity Bar.
 
-## セットアップ
+## Development setup
 
-開発環境をセットアップする場合は次を実行します。
+Install dependencies and run the validation suite:
 
 ```bash
 npm ci
@@ -72,74 +74,74 @@ npm run check
 npm test
 ```
 
-VS Codeでこのフォルダを開き、`Run and Debug`から`Run Extension`を実行します。起動したExtension Development HostでActivity Barの`GitLab Review`を開いてください。
+Open this repository in VS Code and start `Run Extension` from the Run and Debug view. In the Extension Development Host, open `GitLab Review` from the Activity Bar.
 
-`glab`が未ログインの場合は、サイドバーの`Sign in`から統合ターミナルでログインを開始できます。
+If `glab` is not authenticated, use `Sign in` from the Sidebar to start the login flow in the integrated terminal.
 
-## 設定
+## Configuration
 
-| 設定 | 既定値 | 用途 |
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| `gitlabReview.gitlabBaseUrl` | `https://gitlab.com` | GitLabインスタンスURL（任意。カスタムドメイン、ポート、サブパスに対応） |
-| `gitlabReview.projectId` | 空 | 初期表示するプロジェクトIDまたはURLエンコード済みパス |
-| `gitlabReview.mergeRequestIid` | 空 | 初期表示するMR IID |
+| `gitlabReview.gitlabBaseUrl` | `https://gitlab.com` | GitLab instance URL. Custom domains, ports, and subpaths are supported. |
+| `gitlabReview.projectId` | empty | Initial GitLab project ID or URL-encoded project path. |
+| `gitlabReview.mergeRequestIid` | empty | Initial Merge Request IID. |
 
-保存済みの選択も`projectId`・`mergeRequestIid`の指定もない場合は、`Open My work`から対象MRを選択します。
+If there is no saved selection and neither `projectId` nor `mergeRequestIid` is configured, use `Open My work` to choose a Merge Request.
 
-`gitlabReview.gitlabBaseUrl`を設定しない場合は、`glab auth status --all`で認証済みのホストを自動検出します。複数のホストがある場合は、ワークスペースのGitリモートと一致するホストを優先します。必要に応じて、`https://gitlab.example.com:8443/gitlab`のようなURLを明示設定することもできます。
+When `gitlabReview.gitlabBaseUrl` is not explicitly configured, the extension inspects `glab auth status --all` and automatically selects an authenticated host. If multiple hosts are available, it prefers the one matching the current workspace Git remote. You can still set an explicit URL such as `https://gitlab.example.com:8443/gitlab` when needed.
 
-## サポート
+## Support
 
-不具合報告・機能要望は[GitHub Issues](https://github.com/ota-takeru/gitlab-review-workspace/issues)へお願いします。報告時にアクセストークン、Authorizationヘッダー、認証情報、非公開MRの内容を貼り付けないでください。
+Please report bugs and feature requests through [GitHub Issues](https://github.com/ota-takeru/gitlab-review-workspace/issues). Do not include access tokens, Authorization headers, credentials, or private Merge Request content in reports.
 
-詳細は[`SUPPORT.md`](./SUPPORT.md)を参照してください。
+See [`SUPPORT.md`](./SUPPORT.md) for more information.
 
-## 開発コマンド
+## Development commands
 
-| コマンド | 用途 |
+| Command | Purpose |
 | --- | --- |
-| `npm run check` | Extension HostとVueの型チェック。通常の編集後に最初に実行 |
-| `npm run compile` | Hostコードと3つのWebviewをビルド |
-| `npm test` | クリーンビルド後に全Nodeテストを実行 |
-| `npm run watch` | HostとWebviewを監視ビルド |
-| `npm run storybook -- --no-open` | UI状態カタログを`localhost:6006`で起動 |
-| `npm run test:storybook` | Chromiumでstory・interaction・a11yテストを実行 |
-| `npm run build:storybook` | Storybookのproduction build |
-| `npm run ui:capture` | 固定Storybook状態を撮影し、light/dark比較用デザインボードを生成 |
-| `npm run ui:verify` | 型、Storybook、a11y、production build、UI撮影を一括検証 |
-| `npm run clean` | `out/`を削除 |
+| `npm run check` | Type-check the Extension Host and Vue code. Run this first after normal edits. |
+| `npm run compile` | Build the host code and the three webviews. |
+| `npm test` | Perform a clean build and run all Node tests. |
+| `npm run watch` | Watch-build the host and webviews. |
+| `npm run storybook -- --no-open` | Start the UI state catalog on `localhost:6006`. |
+| `npm run test:storybook` | Run Storybook interaction and accessibility tests in Chromium. |
+| `npm run build:storybook` | Create a production Storybook build. |
+| `npm run ui:capture` | Capture fixed Storybook states and generate light/dark comparison boards. |
+| `npm run ui:verify` | Run type checks, Storybook tests, accessibility checks, production build, and UI capture. |
+| `npm run clean` | Remove `out/`. |
 
-`out/`と`media/webview/`のJavaScript/CSSは生成物です。直接編集せず、`src/`または`webview/`を変更して再ビルドしてください。
+JavaScript and CSS under `out/` and `media/webview/` are generated files. Edit `src/` or `webview/` and rebuild instead of changing generated output directly.
 
-## プロジェクト構成
+## Project structure
 
 ```text
 src/
-  extension.ts            VS Code拡張のエントリーポイント
-  reviewStore.ts          MR状態、更新、キャッシュ、楽観的更新
-  gitlabApi.ts            glab経由のGitLab APIアクセス
-  sidebarProvider.ts      Sidebar Webviewのホスト
-  reviewFilePanel.ts      レビューファイルパネルのホスト
-  nativeReviewEditor.ts   VS Code標準diffとComment APIのホスト
-  commitDiffPanel.ts      コミット差分パネルのホスト
-  webviewProtocol.ts      HostとWebview間のメッセージ契約
-  test/                   Nodeテスト
+  extension.ts            VS Code extension entry point
+  reviewStore.ts          MR state, refresh, cache, and optimistic updates
+  gitlabApi.ts            GitLab API access through glab
+  sidebarProvider.ts      Sidebar webview host
+  reviewFilePanel.ts      Review file panel host
+  nativeReviewEditor.ts   Native VS Code diff and Comment API host
+  commitDiffPanel.ts      Commit diff panel host
+  webviewProtocol.ts      Typed host/webview message contracts
+  test/                   Node tests
 webview/
-  sidebar/                Sidebar Vueアプリ
-  review-file/            レビュー差分Vueアプリ
-  commit-diff/            コミット差分Vueアプリ
-  common/                 共通コンポーネント、テーマ、VS Code APIラッパー
+  sidebar/                Sidebar Vue app
+  review-file/            Review diff Vue app
+  commit-diff/            Commit diff Vue app
+  common/                 Shared components, theme, and VS Code API wrappers
 media/
-  gitlab-review.svg       Activity Barアイコン
-  gitlab-review.png       Marketplaceアイコン
-  webview/                Vite生成物
+  gitlab-review.svg       Activity Bar icon
+  gitlab-review.png       Marketplace icon
+  webview/                Vite-generated assets
 docs/
-  DEVELOPMENT.md          開発・デバッグ・検証手順
-  UI_DESIGN.md            UI設計契約と視覚QA基準
-  CODEX_TASKS.md          新規Codexチャット用の依頼テンプレート
+  DEVELOPMENT.md          Development, debugging, and validation guide
+  UI_DESIGN.md            UI design contract and visual QA criteria
+  CODEX_TASKS.md          Request templates for new Codex chats
 ```
 
-## アーキテクチャ
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -154,21 +156,21 @@ flowchart LR
   Protocol --> Review["Review file Vue app (MR / commit diff)"]
 ```
 
-HostとWebview間では`src/webviewProtocol.ts`の型付きメッセージのみを使います。HTML断片や認証情報をWebviewへ渡さないでください。
+Host/webview communication uses only the typed messages defined in `src/webviewProtocol.ts`. Do not pass raw HTML fragments or authentication credentials to webviews.
 
-## Codexで作業する場合
+## Working with Codex
 
-リポジトリ直下の[`AGENTS.md`](./AGENTS.md)は、新規Codexチャットで自動的に読み込まれる永続ガイダンスです。タスク固有の目的、再現手順、制約、完了条件だけを新しいチャットで追加してください。
+[`AGENTS.md`](./AGENTS.md) at the repository root contains persistent guidance that is automatically loaded in new Codex chats. Add only task-specific goals, reproduction steps, constraints, and completion criteria in each new chat.
 
-依頼文の例は[`docs/CODEX_TASKS.md`](./docs/CODEX_TASKS.md)にあります。UI変更では[`docs/ui/project-profile.yaml`](./docs/ui/project-profile.yaml)、[`docs/ui/visual-quality.md`](./docs/ui/visual-quality.md)、該当する[画面ブリーフ](./docs/ui/screens/)を読み、`$ui-review`による変更前の独立評価、上位3件までの修正、`npm run ui:capture`が生成するデザインボードでの同条件比較を依頼してください。
+Example prompts are available in [`docs/CODEX_TASKS.md`](./docs/CODEX_TASKS.md). For UI work, also review [`docs/ui/project-profile.yaml`](./docs/ui/project-profile.yaml), [`docs/ui/visual-quality.md`](./docs/ui/visual-quality.md), and the relevant [screen brief](./docs/ui/screens/). Use `$ui-review` for an independent pre-change review, address at most the top three issues, and compare equivalent states using the design boards generated by `npm run ui:capture`.
 
-## 詳細ドキュメント
+## More documentation
 
-- [開発・検証ガイド](./docs/DEVELOPMENT.md)
-- [UIデザイン契約](./docs/UI_DESIGN.md)
-- [プロジェクトUIプロファイル](./docs/ui/project-profile.yaml)
-- [視覚品質契約](./docs/ui/visual-quality.md)
-- [画面別UIブリーフ](./docs/ui/screens/)
-- [Storybook・エージェントUI検証](./docs/STORYBOOK.md)
-- [Codexタスクテンプレート](./docs/CODEX_TASKS.md)
-- [変更履歴](./CHANGELOG.md)
+- [Development and validation guide](./docs/DEVELOPMENT.md)
+- [UI design contract](./docs/UI_DESIGN.md)
+- [Project UI profile](./docs/ui/project-profile.yaml)
+- [Visual quality contract](./docs/ui/visual-quality.md)
+- [Screen-specific UI briefs](./docs/ui/screens/)
+- [Storybook and agent UI validation](./docs/STORYBOOK.md)
+- [Codex task templates](./docs/CODEX_TASKS.md)
+- [Changelog](./CHANGELOG.md)
