@@ -2,6 +2,18 @@
 
 All notable changes to GitLab Review Workspace are documented here.
 
+## [0.0.17](https://github.com/ota-takeru/gitlab-review-workspace/compare/v0.0.16...v0.0.17) (2026-09-11)
+
+
+### Features
+
+* redesign Marketplace and Activity Bar icons ([f5995d0](https://github.com/ota-takeru/gitlab-review-workspace/commit/f5995d0ff17b7e91a013fc206a018e444a92cd62))
+
+
+### Bug Fixes
+
+* make Marketplace publishing PAT-based and optional ([21efd06](https://github.com/ota-takeru/gitlab-review-workspace/commit/21efd0688328933e725ad63458f4956480a8dfea))
+
 ## [0.0.16](https://github.com/ota-takeru/gitlab-review-workspace/compare/v0.0.15...v0.0.16) (2026-09-11)
 
 
