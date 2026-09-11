@@ -7,11 +7,15 @@
 .vscode/**
 docs/**
 output/**
+scripts/**
 src/**
 storybook-static/**
 test-results/**
+tests/**
 webview/**
+.gitignore
 AGENTS.md
+MARKETPLACE.md
 package-lock.json
 tsconfig.json
 vite.config.ts
