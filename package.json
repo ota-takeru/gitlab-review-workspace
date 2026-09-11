@@ -1,7 +1,7 @@
 {
   "name": "gitlab-review-workspace",
-  "displayName": "GitLab Review Workspace",
-  "description": "Review GitLab merge requests directly in VS Code with native diffs, threaded comments, My Work, and local review drafts.",
+  "displayName": "%extension.displayName%",
+  "description": "%extension.description%",
   "version": "0.0.14",
   "publisher": "ota-takeru",
   "license": "SEE LICENSE IN LICENSE",
@@ -46,91 +46,91 @@
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
-      "title": "GitLab Review Workspace",
+      "title": "%configuration.title%",
       "properties": {
         "gitlabReview.gitlabBaseUrl": {
           "type": "string",
           "default": "https://gitlab.com",
-          "description": "Optional GitLab instance URL. If unset, the authenticated glab host is detected automatically."
+          "description": "%configuration.gitlabBaseUrl.description%"
         },
         "gitlabReview.projectId": {
           "type": "string",
           "default": "",
-          "description": "GitLab project ID or URL-encoded path."
+          "description": "%configuration.projectId.description%"
         },
         "gitlabReview.mergeRequestIid": {
           "type": "string",
           "default": "",
-          "description": "Merge request IID to review."
+          "description": "%configuration.mergeRequestIid.description%"
         }
       }
     },
     "commands": [
       {
         "command": "gitlabReview.openFile",
-        "title": "GitLab Review: Open Review File"
+        "title": "%command.openFile.title%"
       },
       {
         "command": "gitlabReview.openFileNative",
-        "title": "GitLab Review: Open Review File in VS Code Diff",
+        "title": "%command.openFileNative.title%",
         "icon": "$(diff)"
       },
       {
         "command": "gitlabReview.openFileWebview",
-        "title": "GitLab Review: Open Review File in Legacy Viewer"
+        "title": "%command.openFileWebview.title%"
       },
       {
         "command": "gitlabReview.recoverLegacyLocalEdits",
-        "title": "GitLab Review: Recover Local Drafts from Earlier Versions"
+        "title": "%command.recoverLegacyLocalEdits.title%"
       },
       {
         "command": "gitlabReview.nativeComment.submit",
-        "title": "Comment"
+        "title": "%command.nativeComment.submit.title%"
       },
       {
         "command": "gitlabReview.nativeComment.uploadAndSubmit",
-        "title": "Attach Image and Comment",
+        "title": "%command.nativeComment.uploadAndSubmit.title%",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "gitlabReview.nativeComment.resolve",
-        "title": "Resolve Discussion",
+        "title": "%command.nativeComment.resolve.title%",
         "icon": "$(check)"
       },
       {
         "command": "gitlabReview.nativeComment.reopen",
-        "title": "Reopen Discussion",
+        "title": "%command.nativeComment.reopen.title%",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "gitlabReview.nativeComment.edit",
-        "title": "Edit Comment",
+        "title": "%command.nativeComment.edit.title%",
         "icon": "$(edit)"
       },
       {
         "command": "gitlabReview.nativeComment.saveEdit",
-        "title": "Save Comment"
+        "title": "%command.nativeComment.saveEdit.title%"
       },
       {
         "command": "gitlabReview.nativeComment.cancelEdit",
-        "title": "Cancel"
+        "title": "%command.nativeComment.cancelEdit.title%"
       },
       {
         "command": "gitlabReview.nativeComment.revealInSidebar",
-        "title": "Show Discussion in Sidebar",
+        "title": "%command.nativeComment.revealInSidebar.title%",
         "icon": "$(layout-sidebar-left)"
       },
       {
         "command": "gitlabReview.login",
-        "title": "GitLab Review: Log In with glab"
+        "title": "%command.login.title%"
       },
       {
         "command": "gitlabReview.refreshAuth",
-        "title": "GitLab Review: Refresh glab Login Status"
+        "title": "%command.refreshAuth.title%"
       },
       {
         "command": "gitlabReview.refreshReview",
-        "title": "GitLab Review: Refresh Merge Request"
+        "title": "%command.refreshReview.title%"
       }
     ],
     "menus": {
@@ -194,7 +194,7 @@
       "activitybar": [
         {
           "id": "gitlabReview",
-          "title": "GitLab Review",
+          "title": "%viewContainer.gitlabReview.title%",
           "icon": "media/gitlab-review.svg"
         }
       ]
@@ -204,7 +204,7 @@
         {
           "id": "gitlabReview.sidebar",
           "type": "webview",
-          "name": "Merge Request"
+          "name": "%view.gitlabReview.sidebar.name%"
         }
       ]
     }
