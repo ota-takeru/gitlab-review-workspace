@@ -80,10 +80,17 @@ jobs:
           --clobber
           --repo "${{ github.repository }}"
 
+      - name: Azure login for Marketplace publishing
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
       - name: Publish to Visual Studio Marketplace
         shell: pwsh
         run: >-
           npx --yes @vscode/vsce@3.9.2 publish
-          --oidc
+          --azure-credential
           --skip-duplicate
           --packagePath "gitlab-review-workspace-${{ needs.release-please.outputs.version }}.vsix"
