@@ -1,9 +1,10 @@
 {
   "name": "gitlab-review-workspace",
   "displayName": "GitLab Review Workspace",
-  "description": "GitLab merge request review experience with threaded comments, review diffs, and editable local review drafts.",
+  "description": "Review GitLab merge requests directly in VS Code with native diffs, threaded comments, My Work, and local review drafts.",
   "version": "0.0.14",
   "publisher": "ota-takeru",
+  "icon": "media/gitlab-review.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ota-takeru/gitlab-review-workspace.git"
@@ -12,6 +13,19 @@
   "bugs": {
     "url": "https://github.com/ota-takeru/gitlab-review-workspace/issues"
   },
+  "keywords": [
+    "gitlab",
+    "merge-request",
+    "code-review",
+    "source-control",
+    "review",
+    "glab"
+  ],
+  "galleryBanner": {
+    "color": "#1f1e24",
+    "theme": "dark"
+  },
+  "pricing": "Free",
   "engines": {
     "vscode": "^1.97.0"
   },
