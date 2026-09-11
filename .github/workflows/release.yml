@@ -1,0 +1,107 @@
+name: Release VS Code extension
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      vsix_name: ${{ steps.version.outputs.vsix_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate tag and version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $expectedTag = "v$version"
+          if ("${{ github.ref_name }}" -ne $expectedTag) {
+            throw "Tag '${{ github.ref_name }}' does not match package.json version '$version'. Expected '$expectedTag'."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "vsix_name=gitlab-review-workspace-$version.vsix" >> $env:GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Type check
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Package VSIX
+        shell: pwsh
+        run: npx --yes @vscode/vsce@3.9.2 package --out "${{ steps.version.outputs.vsix_name }}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-vsix
+          path: ${{ steps.version.outputs.vsix_name }}
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: release-vsix
+          path: dist
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VSIX: dist/${{ needs.build.outputs.vsix_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$VSIX" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$VSIX" \
+              --verify-tag \
+              --generate-notes \
+              --title "$TAG" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+
+  marketplace:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: release-vsix
+          path: dist
+
+      - name: Publish to Visual Studio Marketplace
+        run: >-
+          npx --yes @vscode/vsce@3.9.2 publish
+          --oidc
+          --skip-duplicate
+          --packagePath "dist/${{ needs.build.outputs.vsix_name }}"
