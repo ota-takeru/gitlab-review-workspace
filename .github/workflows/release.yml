@@ -1,39 +1,50 @@
-name: Release VS Code extension
+name: Release Please
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  build:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: windows-latest
     permissions:
-      contents: read
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      vsix_name: ${{ steps.version.outputs.vsix_name }}
+      contents: write
+      id-token: write
     steps:
-      - name: Checkout
+      - name: Checkout released version
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Validate tag and version
-        id: version
-        shell: pwsh
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $expectedTag = "v$version"
-          if ("${{ github.ref_name }}" -ne $expectedTag) {
-            throw "Tag '${{ github.ref_name }}' does not match package.json version '$version'. Expected '$expectedTag'."
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "vsix_name=gitlab-review-workspace-$version.vsix" >> $env:GITHUB_OUTPUT
 
       - name: Install dependencies
         run: npm ci
@@ -47,61 +58,32 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Validate released version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ($version -ne "${{ needs.release-please.outputs.version }}") {
+            throw "package.json version '$version' does not match Release Please version '${{ needs.release-please.outputs.version }}'."
+          }
+
       - name: Package VSIX
         shell: pwsh
-        run: npx --yes @vscode/vsce@3.9.2 package --out "${{ steps.version.outputs.vsix_name }}"
+        run: npx --yes @vscode/vsce@3.9.2 package --out "gitlab-review-workspace-${{ needs.release-please.outputs.version }}.vsix"
 
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-vsix
-          path: ${{ steps.version.outputs.vsix_name }}
-          if-no-files-found: error
-
-  github-release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download VSIX
-        uses: actions/download-artifact@v4
-        with:
-          name: release-vsix
-          path: dist
-
-      - name: Create or update GitHub Release
+      - name: Attach VSIX to GitHub Release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          VSIX: dist/${{ needs.build.outputs.vsix_name }}
-        run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$VSIX" --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$TAG" "$VSIX" \
-              --verify-tag \
-              --generate-notes \
-              --title "$TAG" \
-              --repo "$GITHUB_REPOSITORY"
-          fi
-
-  marketplace:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Download VSIX
-        uses: actions/download-artifact@v4
-        with:
-          name: release-vsix
-          path: dist
+        run: >-
+          gh release upload "${{ needs.release-please.outputs.tag_name }}"
+          "gitlab-review-workspace-${{ needs.release-please.outputs.version }}.vsix"
+          --clobber
+          --repo "${{ github.repository }}"
 
       - name: Publish to Visual Studio Marketplace
+        shell: pwsh
         run: >-
           npx --yes @vscode/vsce@3.9.2 publish
           --oidc
           --skip-duplicate
-          --packagePath "dist/${{ needs.build.outputs.vsix_name }}"
+          --packagePath "gitlab-review-workspace-${{ needs.release-please.outputs.version }}.vsix"
