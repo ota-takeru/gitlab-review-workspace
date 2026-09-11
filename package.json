@@ -4,6 +4,7 @@
   "description": "Review GitLab merge requests directly in VS Code with native diffs, threaded comments, My Work, and local review drafts.",
   "version": "0.0.14",
   "publisher": "ota-takeru",
+  "license": "MIT",
   "icon": "media/gitlab-review.png",
   "repository": {
     "type": "git",
