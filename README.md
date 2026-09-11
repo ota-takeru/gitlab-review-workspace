@@ -3,7 +3,7 @@
 GitLabのMerge Requestを、VS Codeから離れずに確認・レビューするための拡張機能です。変更ファイル、コミット、ディスカッション、ローカル編集を1つのレビュー環境にまとめます。
 
 > [!NOTE]
-> 現在はGitHub ReleasesでVSIXを配布しています。Visual Studio Marketplaceには未公開です。
+> GitLab Review Workspaceはコミュニティ製の非公式拡張です。GitLab Inc.による公式製品ではありません。
 
 ## 主な機能
 
@@ -43,7 +43,6 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 ## 必要環境
 
 - VS Code 1.97以降
-- Node.jsとnpm
 - [GitLab CLI (`glab`)](https://gitlab.com/gitlab-org/cli)
 - `glab auth login`済みのGitLabアカウント
 
@@ -51,19 +50,21 @@ GitLabのMerge Requestを、VS Codeから離れずに確認・レビューする
 
 ## インストール
 
-1. [GitHub Releases](https://github.com/ota-takeru/gitlab-review-workspace/releases)から最新の`.vsix`をダウンロードします。
-2. VS CodeのExtensionsビューで右上の`…`を開き、`Install from VSIX...`を選択します。
-3. ダウンロードしたVSIXを選択し、必要に応じてVS Codeを再読み込みします。
+Visual Studio Marketplaceから`GitLab Review Workspace`を検索してインストールします。
 
 コマンドラインからインストールする場合は次を実行します。
 
 ```bash
-code --install-extension gitlab-review-workspace-0.0.7.vsix
+code --install-extension ota-takeru.gitlab-review-workspace
 ```
+
+GitHub Releasesで配布している`.vsix`を使う場合は、VS CodeのExtensionsビュー右上の`…`から`Install from VSIX...`を選択してください。
 
 インストール後、`glab auth login`を実行してからActivity Barの`GitLab Review`を開いてください。
 
 ## セットアップ
+
+開発環境をセットアップする場合は次を実行します。
 
 ```bash
 npm ci
@@ -86,6 +87,12 @@ VS Codeでこのフォルダを開き、`Run and Debug`から`Run Extension`を�
 保存済みの選択も`projectId`・`mergeRequestIid`の指定もない場合は、`Open My work`から対象MRを選択します。
 
 `gitlabReview.gitlabBaseUrl`を設定しない場合は、`glab auth status --all`で認証済みのホストを自動検出します。複数のホストがある場合は、ワークスペースのGitリモートと一致するホストを優先します。必要に応じて、`https://gitlab.example.com:8443/gitlab`のようなURLを明示設定することもできます。
+
+## サポート
+
+不具合報告・機能要望は[GitHub Issues](https://github.com/ota-takeru/gitlab-review-workspace/issues)へお願いします。報告時にアクセストークン、Authorizationヘッダー、認証情報、非公開MRの内容を貼り付けないでください。
+
+詳細は[`SUPPORT.md`](./SUPPORT.md)を参照してください。
 
 ## 開発コマンド
 
@@ -124,6 +131,7 @@ webview/
   common/                 共通コンポーネント、テーマ、VS Code APIラッパー
 media/
   gitlab-review.svg       Activity Barアイコン
+  gitlab-review.png       Marketplaceアイコン
   webview/                Vite生成物
 docs/
   DEVELOPMENT.md          開発・デバッグ・検証手順
@@ -163,3 +171,4 @@ HostとWebview間では`src/webviewProtocol.ts`の型付きメッセージのみ
 - [画面別UIブリーフ](./docs/ui/screens/)
 - [Storybook・エージェントUI検証](./docs/STORYBOOK.md)
 - [Codexタスクテンプレート](./docs/CODEX_TASKS.md)
+- [変更履歴](./CHANGELOG.md)
