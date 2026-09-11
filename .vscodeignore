@@ -14,9 +14,11 @@ test-results/**
 tests/**
 webview/**
 .gitignore
+.release-please-manifest.json
 AGENTS.md
 MARKETPLACE.md
 package-lock.json
+release-please-config.json
 tsconfig.json
 vite.config.ts
 vitest.config.ts
