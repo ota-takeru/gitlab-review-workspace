@@ -33,6 +33,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout released version
         uses: actions/checkout@v4
@@ -79,25 +80,27 @@ jobs:
           --clobber
           --repo "${{ github.repository }}"
 
-      - name: Check Marketplace publishing credentials
-        id: marketplace
+      - name: Validate Marketplace identity configuration
         shell: pwsh
         env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:VSCE_PAT)) {
-            "enabled=false" >> $env:GITHUB_OUTPUT
-            Write-Host "::notice::VSCE_PAT is not configured. Skipping Visual Studio Marketplace publishing."
-          } else {
-            "enabled=true" >> $env:GITHUB_OUTPUT
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)) {
+            throw "Configure AZURE_CLIENT_ID and AZURE_TENANT_ID repository variables before publishing."
           }
 
+      - name: Azure login for Marketplace publishing
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
       - name: Publish to Visual Studio Marketplace
-        if: ${{ steps.marketplace.outputs.enabled == 'true' }}
         shell: pwsh
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: >-
           npx --yes @vscode/vsce@3.9.2 publish
+          --azure-credential
           --skip-duplicate
           --packagePath "gitlab-review-workspace-${{ needs.release-please.outputs.version }}.vsix"
